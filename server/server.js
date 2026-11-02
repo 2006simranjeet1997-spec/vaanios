@@ -4,6 +4,11 @@ const cors = require("cors");
 const multer = require("multer");
 require("dotenv").config();
 
+const connectDB = require("./config/db");
+
+const Conversation = require("./models/Conversation");
+const SupportTicket = require("./models/SupportTicket");
+
 const app = express();
 
 const upload = multer({
@@ -174,9 +179,97 @@ app.post("/api/tts", async (req, res) => {
   }
 });
 
-  
+// Get all conversations
+app.get("/api/conversations", async (req, res) => {
+  try {
+    const conversations = await Conversation.find().sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: conversations.length,
+      conversations,
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch conversations.",
+    });
+  }
+});
+
+// Get all support tickets
+app.get("/api/tickets", async (req, res) => {
+  try {
+    const tickets = await SupportTicket.find()
+      .populate("conversationId")
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: tickets.length,
+      tickets,
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch support tickets.",
+    });
+  }
+});
+
+// Update support ticket status
+app.patch("/api/tickets/:id", async (req, res) => {
+  try {
+    const { status } = req.body;
+
+    const allowedStatuses = [
+      "Open",
+      "In Progress",
+      "Resolved",
+      "Escalated",
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket status.",
+      });
+    }
+
+    const ticket = await SupportTicket.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { returnDocument: "after", runValidators: true }
+    );
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: "Support ticket not found.",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Ticket status updated successfully!",
+      ticket,
+    });
+
+  } catch (error) {
+    console.error("Ticket Update Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update ticket status.",
+    });
+  }
+});
+
+
 // VaaniOS - Customer Complaint Understanding Engine
-app.post("/api/understand", (req, res) => {
+app.post("/api/understand", async (req, res) => {
   try {
     const { transcript } = req.body;
 
@@ -189,21 +282,17 @@ app.post("/api/understand", (req, res) => {
 
     const text = transcript.toLowerCase();
 
-    // Extract order ID
     const orderMatch = transcript.match(
-    /\border\s*(?:id|number|no)\s*[:#-]?\s*([A-Z0-9-]{4,})\b/i
+      /\border\s*(?:id|number|no)\s*[:#-]?\s*([A-Z0-9-]{4,})\b/i
     );
 
     const orderId = orderMatch ? orderMatch[1] : null;
 
-    // Identify complaint category
     let category = "General Inquiry";
     let priority = "Normal";
     let requestedAction = "Customer assistance";
 
-    if (
-      /delay|late|not\s+(?:been\s+)?delivered|hasn't\s+arrived|has not arrived|deliver nahi|nahi aaya|नहीं आया/i.test(text)
-    ) {
+    if (/delay|late|not\s+(?:been\s+)?delivered|hasn't\s+arrived|has not arrived|deliver nahi|nahi aaya|नहीं आया/i.test(text)) {
       category = "Delayed Order";
       priority = "High";
       requestedAction = "Check delivery status";
@@ -234,41 +323,54 @@ app.post("/api/understand", (req, res) => {
       requestedAction = "Arrange product issue review";
     }
 
-    // Generate a customer support response
     let response = "";
 
     switch (category) {
       case "Delayed Order":
-        response =
-          "I'm sorry your order has been delayed. I understand how frustrating this can be. Let me help you check its delivery status.";
+        response = "I'm sorry your order has been delayed. I understand how frustrating this can be. Let me help you check its delivery status.";
         break;
 
       case "Refund Request":
-        response =
-          "I'm sorry for the inconvenience. I can help you with your refund request. Let me check the details.";
+        response = "I'm sorry for the inconvenience. I can help you with your refund request. Let me check the details.";
         break;
 
       case "Return / Exchange":
-        response =
-          "I'd be happy to help you with your return or exchange. Let me guide you through the next steps.";
+        response = "I'd be happy to help you with your return or exchange. Let me guide you through the next steps.";
         break;
 
       case "Damaged Product":
-        response =
-          "I'm sorry your product arrived damaged. I understand your concern. Let me help you raise a complaint.";
+        response = "I'm sorry your product arrived damaged. I understand your concern. Let me help you raise a complaint.";
         break;
 
       default:
-        response =
-          "Thank you for contacting us. I'm here to help you. Could you please share a few more details about your concern?";
+        response = "Thank you for contacting us. I'm here to help you. Could you please share a few more details about your concern?";
     }
 
-    // Generate conversation summary
     const summary =
       `Customer issue: ${category}. ` +
       `Priority: ${priority}. ` +
       `Order ID: ${orderId || "Not provided"}. ` +
       `Requested action: ${requestedAction}.`;
+
+    // Save conversation in MongoDB
+    const conversation = await Conversation.create({
+      transcript,
+      category,
+      priority,
+      response,
+      status: "Open",
+    });
+
+    // Create support ticket in MongoDB
+    const ticket = await SupportTicket.create({
+      orderId,
+      category,
+      priority,
+      description: transcript,
+      requestedAction,
+      conversationId: conversation._id,
+      status: "Open",
+    });
 
     res.json({
       success: true,
@@ -280,6 +382,9 @@ app.post("/api/understand", (req, res) => {
         summary,
       },
       response,
+      conversationId: conversation._id,
+      ticketId: ticket._id,
+      message: "Conversation and support ticket saved successfully!",
     });
 
   } catch (error) {
@@ -295,6 +400,17 @@ app.post("/api/understand", (req, res) => {
 
 const PORT = 5001;
 
-app.listen(PORT, () => {
-  console.log(`VaaniOS server running on port ${PORT}`);
-});
+const startServer = async () => {
+  try {
+    await connectDB();
+
+    app.listen(PORT, () => {
+      console.log(`VaaniOS server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server startup failed:", error.message);
+    process.exit(1);
+  }
+};
+
+startServer();

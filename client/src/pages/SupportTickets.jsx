@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Search,
   Ticket,
@@ -9,59 +9,44 @@ import {
   Plus,
 } from "lucide-react";
 
-const initialTickets = [
-  {
-    id: "TKT-001",
-    customer: "Priya Mehta",
-    issue: "Refund not received",
-    priority: "High",
-    status: "Open",
-    date: "Today, 10:30 AM",
-  },
-  {
-    id: "TKT-002",
-    customer: "Simran Kaur",
-    issue: "Payment failure",
-    priority: "High",
-    status: "In Progress",
-    date: "Today, 09:45 AM",
-  },
-  {
-    id: "TKT-003",
-    customer: "Aarav Sharma",
-    issue: "Order delivery delay",
-    priority: "Medium",
-    status: "Resolved",
-    date: "Yesterday",
-  },
-  {
-    id: "TKT-004",
-    customer: "Rahul Verma",
-    issue: "Product information",
-    priority: "Low",
-    status: "Open",
-    date: "Yesterday",
-  },
-  {
-    id: "TKT-005",
-    customer: "Ananya Singh",
-    issue: "Order cancellation",
-    priority: "Medium",
-    status: "In Progress",
-    date: "Yesterday",
-  },
-];
-
 function SupportTickets() {
-  const [tickets, setTickets] = useState(initialTickets);
+  const [tickets, setTickets] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const fetchTickets = async () => {
+      try {
+        const response = await fetch("http://localhost:5001/api/tickets");
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error("Failed to load support tickets.");
+        }
+
+        setTickets(data.tickets);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTickets();
+  }, []);
 
   const filteredTickets = tickets.filter((ticket) => {
+    const customer = ticket.customerName || "Guest";
+    const issue = ticket.category || "";
+    const ticketId = `TKT-${ticket._id.slice(-6).toUpperCase()}`;
+
     const matchesSearch =
-      ticket.customer.toLowerCase().includes(search.toLowerCase()) ||
-      ticket.id.toLowerCase().includes(search.toLowerCase()) ||
-      ticket.issue.toLowerCase().includes(search.toLowerCase());
+      customer.toLowerCase().includes(search.toLowerCase()) ||
+      ticketId.toLowerCase().includes(search.toLowerCase()) ||
+      issue.toLowerCase().includes(search.toLowerCase()) ||
+      (ticket.description || "").toLowerCase().includes(search.toLowerCase());
 
     const matchesStatus =
       statusFilter === "All" || ticket.status === statusFilter;
@@ -69,21 +54,60 @@ function SupportTickets() {
     return matchesSearch && matchesStatus;
   });
 
-  const updateStatus = (id, newStatus) => {
+  
+const updateStatus = async (id, newStatus) => {
+  try {
+    const response = await fetch(
+      `http://localhost:5001/api/tickets/${id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status: newStatus }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data.message || "Failed to update ticket.");
+    }
+
     setTickets((currentTickets) =>
       currentTickets.map((ticket) =>
-        ticket.id === id ? { ...ticket, status: newStatus } : ticket
+        ticket._id === id
+          ? { ...ticket, status: data.ticket.status }
+          : ticket
       )
     );
-  };
 
-  const openCount = tickets.filter((ticket) => ticket.status === "Open").length;
+  } catch (error) {
+    alert(error.message);
+  }
+};
+
+
+  const openCount = tickets.filter(
+    (ticket) => ticket.status === "Open"
+  ).length;
+
   const progressCount = tickets.filter(
     (ticket) => ticket.status === "In Progress"
   ).length;
+
   const resolvedCount = tickets.filter(
     (ticket) => ticket.status === "Resolved"
   ).length;
+
+  const formatDate = (date) => {
+    if (!date) return "Unknown";
+
+    return new Date(date).toLocaleString("en-IN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  };
 
   return (
     <div className="space-y-6 text-slate-800">
@@ -97,7 +121,11 @@ function SupportTickets() {
           </p>
         </div>
 
-        <button className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-700">
+        <button
+          disabled
+          title="Ticket creation will be enabled in a later step."
+          className="inline-flex cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-violet-400 px-5 py-3 text-sm font-semibold text-white opacity-70"
+        >
           <Plus size={18} />
           Create Ticket
         </button>
@@ -155,6 +183,7 @@ function SupportTickets() {
           <option value="Open">Open</option>
           <option value="In Progress">In Progress</option>
           <option value="Resolved">Resolved</option>
+          <option value="Escalated">Escalated</option>
         </select>
       </div>
 
@@ -165,76 +194,96 @@ function SupportTickets() {
           <h3 className="text-lg font-bold">All Support Tickets</h3>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[750px] text-left">
-            <thead>
-              <tr className="border-b border-slate-100 text-xs text-slate-400">
-                <th className="pb-4 font-medium">TICKET ID</th>
-                <th className="pb-4 font-medium">CUSTOMER</th>
-                <th className="pb-4 font-medium">ISSUE</th>
-                <th className="pb-4 font-medium">PRIORITY</th>
-                <th className="pb-4 font-medium">STATUS</th>
-                <th className="pb-4 font-medium">DATE</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {filteredTickets.map((ticket) => (
-                <tr key={ticket.id} className="border-b border-slate-50 last:border-0">
-                  <td className="py-4 text-sm font-semibold text-violet-600">
-                    {ticket.id}
-                  </td>
-
-                  <td className="py-4 text-sm font-medium">
-                    {ticket.customer}
-                  </td>
-
-                  <td className="py-4 text-sm text-slate-500">
-                    {ticket.issue}
-                  </td>
-
-                  <td className="py-4">
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-medium ${
-                        ticket.priority === "High"
-                          ? "bg-rose-50 text-rose-600"
-                          : ticket.priority === "Medium"
-                            ? "bg-amber-50 text-amber-600"
-                            : "bg-slate-100 text-slate-600"
-                      }`}
-                    >
-                      {ticket.priority}
-                    </span>
-                  </td>
-
-                  <td className="py-4">
-                    <select
-                      value={ticket.status}
-                      onChange={(e) => updateStatus(ticket.id, e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-violet-500"
-                    >
-                      <option>Open</option>
-                      <option>In Progress</option>
-                      <option>Resolved</option>
-                    </select>
-                  </td>
-
-                  <td className="py-4 text-sm text-slate-400">
-                    {ticket.date}
-                  </td>
+        {loading ? (
+          <p className="py-10 text-center text-sm text-slate-400">
+            Loading support tickets...
+          </p>
+        ) : error ? (
+          <p className="py-10 text-center text-sm text-rose-500">
+            {error}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[750px] text-left">
+              <thead>
+                <tr className="border-b border-slate-100 text-xs text-slate-400">
+                  <th className="pb-4 font-medium">TICKET ID</th>
+                  <th className="pb-4 font-medium">CUSTOMER</th>
+                  <th className="pb-4 font-medium">ISSUE</th>
+                  <th className="pb-4 font-medium">PRIORITY</th>
+                  <th className="pb-4 font-medium">STATUS</th>
+                  <th className="pb-4 font-medium">DATE</th>
                 </tr>
-              ))}
+              </thead>
 
-              {filteredTickets.length === 0 && (
-                <tr>
-                  <td colSpan="6" className="py-10 text-center text-sm text-slate-400">
-                    No tickets found.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              <tbody>
+                {filteredTickets.map((ticket) => (
+                  <tr
+                    key={ticket._id}
+                    className="border-b border-slate-50 last:border-0"
+                  >
+                    <td className="py-4 text-sm font-semibold text-violet-600">
+                      TKT-{ticket._id.slice(-6).toUpperCase()}
+                    </td>
+
+                    <td className="py-4 text-sm font-medium">
+                      {ticket.customerName || "Guest"}
+                    </td>
+
+                    <td className="py-4 text-sm text-slate-500">
+                      {ticket.category}
+                    </td>
+
+                    <td className="py-4">
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-medium ${
+                          ticket.priority === "High" ||
+                          ticket.priority === "Urgent"
+                            ? "bg-rose-50 text-rose-600"
+                            : ticket.priority === "Normal"
+                              ? "bg-amber-50 text-amber-600"
+                              : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {ticket.priority}
+                      </span>
+                    </td>
+
+                    <td className="py-4">
+                      <select
+                        value={ticket.status}
+                        onChange={(e) =>
+                          updateStatus(ticket._id, e.target.value)
+                        }
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-violet-500"
+                      >
+                        <option>Open</option>
+                        <option>In Progress</option>
+                        <option>Resolved</option>
+                        <option>Escalated</option>
+                      </select>
+                    </td>
+
+                    <td className="py-4 text-sm text-slate-400">
+                      {formatDate(ticket.createdAt)}
+                    </td>
+                  </tr>
+                ))}
+
+                {filteredTickets.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan="6"
+                      className="py-10 text-center text-sm text-slate-400"
+                    >
+                      No tickets found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
   );
