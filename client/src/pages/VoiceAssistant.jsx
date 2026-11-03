@@ -575,11 +575,28 @@ function VoiceAssistant() {
                   </p>
                 </div>
 
+                <div>
+                 <p className="text-xs text-slate-500">Detected Language</p>
+                 <p className="font-medium text-slate-800">
+                    {complaintAnalysis.language}
+                 </p>
+                </div>
+
               </div>
 
               <p className="mt-3 border-t border-indigo-100 pt-3 text-sm text-slate-600">
                 {complaintAnalysis.summary}
               </p>
+                 {complaintAnalysis.clarificationNeeded && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="font-semibold text-amber-800">
+                Additional Information Required
+              </p>
+              <p className="mt-2 text-sm text-amber-700">
+                {complaintAnalysis.clarificationMessage}
+              </p>
+             </div>
+              )}
 
             </div>
           )}

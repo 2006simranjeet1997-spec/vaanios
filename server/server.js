@@ -8,6 +8,7 @@ const connectDB = require("./config/db");
 
 const Conversation = require("./models/Conversation");
 const SupportTicket = require("./models/SupportTicket");
+const generateGeminiResponse = require("./services/geminiService");
 
 const app = express();
 
@@ -220,6 +221,7 @@ app.get("/api/tickets", async (req, res) => {
 });
 
 // Update support ticket status
+
 app.patch("/api/tickets/:id", async (req, res) => {
   try {
     const { status } = req.body;
@@ -251,9 +253,17 @@ app.patch("/api/tickets/:id", async (req, res) => {
       });
     }
 
+    // Keep the linked conversation status synchronized
+    if (ticket.conversationId) {
+      await Conversation.findByIdAndUpdate(
+        ticket.conversationId,
+        { status }
+      );
+    }
+
     res.json({
       success: true,
-      message: "Ticket status updated successfully!",
+      message: "Ticket and conversation status updated successfully!",
       ticket,
     });
 
@@ -268,7 +278,9 @@ app.patch("/api/tickets/:id", async (req, res) => {
 });
 
 
-// VaaniOS - Customer Complaint Understanding Engine
+
+
+// VaaniOS - AI-powered Customer Complaint Understanding Engine
 app.post("/api/understand", async (req, res) => {
   try {
     const { transcript } = req.body;
@@ -280,85 +292,127 @@ app.post("/api/understand", async (req, res) => {
       });
     }
 
-    const text = transcript.toLowerCase();
+    // Send customer transcript to Gemini
+    
+const analysis = await generateGeminiResponse(`
+  You are an intelligent multilingual AI customer support assistant
+  for an Indian e-commerce business.
 
-    const orderMatch = transcript.match(
-      /\border\s*(?:id|number|no)\s*[:#-]?\s*([A-Z0-9-]{4,})\b/i
-    );
+  Analyze the following customer complaint:
+  "${transcript}"
 
-    const orderId = orderMatch ? orderMatch[1] : null;
+  Extract these fields:
 
-    let category = "General Inquiry";
-    let priority = "Normal";
-    let requestedAction = "Customer assistance";
+  1. category: Choose one:
+     Delayed Order, Refund Request, Return / Exchange,
+     Damaged Product, General Inquiry.
 
-    if (/delay|late|not\s+(?:been\s+)?delivered|hasn't\s+arrived|has not arrived|deliver nahi|nahi aaya|नहीं आया/i.test(text)) {
-      category = "Delayed Order";
-      priority = "High";
-      requestedAction = "Check delivery status";
-    } else if (
-      text.includes("refund") ||
-      text.includes("money back") ||
-      text.includes("paisa wapas") ||
-      text.includes("पैसे वापस")
-    ) {
-      category = "Refund Request";
-      priority = "High";
-      requestedAction = "Check refund status";
-    } else if (
-      text.includes("return") ||
-      text.includes("exchange") ||
-      text.includes("wapas karna")
-    ) {
-      category = "Return / Exchange";
-      requestedAction = "Assist with return or exchange";
-    } else if (
-      text.includes("damaged") ||
-      text.includes("broken") ||
-      text.includes("toota") ||
-      text.includes("खराब")
-    ) {
-      category = "Damaged Product";
-      priority = "High";
-      requestedAction = "Arrange product issue review";
-    }
+  2. priority: Choose only:
+     Low, Normal, High, Urgent.
 
-    let response = "";
+  3. orderId: Extract the order ID if provided.
+     Otherwise return null.
 
-    switch (category) {
-      case "Delayed Order":
-        response = "I'm sorry your order has been delayed. I understand how frustrating this can be. Let me help you check its delivery status.";
-        break;
+  4. requestedAction: Identify what the customer wants.
 
-      case "Refund Request":
-        response = "I'm sorry for the inconvenience. I can help you with your refund request. Let me check the details.";
-        break;
+  5. summary: Write a short summary of the complaint.
 
-      case "Return / Exchange":
-        response = "I'd be happy to help you with your return or exchange. Let me guide you through the next steps.";
-        break;
+  6. language: Detect the customer's language.
+     Choose English, Hindi, Punjabi, Hinglish, or Other.
 
-      case "Damaged Product":
-        response = "I'm sorry your product arrived damaged. I understand your concern. Let me help you raise a complaint.";
-        break;
+  7. clarificationNeeded: Return true if essential information
+     is missing and the customer's request cannot proceed
+     without it. For order-specific delivery, refund, or
+     return requests, an order ID is generally required.
+     Otherwise return false.
 
-      default:
-        response = "Thank you for contacting us. I'm here to help you. Could you please share a few more details about your concern?";
-    }
+  8. clarificationMessage:
+     If clarificationNeeded is true, ask the customer for
+     the missing information in their detected language.
+     If false, return an empty string.
 
-    const summary =
-      `Customer issue: ${category}. ` +
-      `Priority: ${priority}. ` +
-      `Order ID: ${orderId || "Not provided"}. ` +
-      `Requested action: ${requestedAction}.`;
+  
+  9. escalationNeeded:
+     Return true when:
+     - The customer explicitly asks to speak to a human agent.
+     - The complaint involves suspected fraud or payment security.
+     - The customer reports a serious safety issue.
+     - The customer has an unresolved issue requiring human intervention.
+     - The complaint is too complex for the AI to handle safely.
+
+     Return false for routine complaints that AI can handle.
+
+  10. escalationReason:
+      If escalationNeeded is true, explain briefly why
+      human intervention is required.
+      If false, return an empty string.
+
+  Important escalation rules:
+  - A delayed order alone does not require escalation.
+  - Missing order ID alone does not require escalation.
+  - High priority does not automatically mean escalation.
+  - If the customer explicitly requests a human,
+    escalation takes priority over normal AI assistance.
+
+
+  Priority guidelines:
+  - Low: General questions.
+  - Normal: Routine requests.
+  - High: Delayed orders, refunds, or damaged products.
+  - Urgent: Serious complaints requiring immediate attention.
+
+  Examples of clarification messages:
+
+  English: Please share your order ID so I can check your order.
+
+  Hindi: कृपया अपना ऑर्डर आईडी बताएं ताकि मैं आपके ऑर्डर की स्थिति जांच सकूं।
+
+  Hinglish: Please apna order ID share kar dijiye, taaki main status check kar sakun.
+
+  Punjabi: ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਆਰਡਰ ਆਈਡੀ ਸਾਂਝਾ ਕਰੋ ਤਾਂ ਜੋ ਮੈਂ ਸਥਿਤੀ ਦੀ ਜਾਂਚ ਕਰ ਸਕਾਂ।
+
+  Return accurate information based only on the customer's message.
+`);
+
+    // Ensure priority matches MongoDB enum values
+    const allowedPriorities = ["Low", "Normal", "High", "Urgent"];
+
+    const priority = allowedPriorities.includes(analysis.priority)
+      ? analysis.priority
+      : "Normal";
+
+    const {
+      category,
+      orderId,
+      requestedAction,
+      summary,
+      language,
+    } = analysis;
+
+    // Generate customer-facing response
+        let response = "";
+         if (analysis.escalationNeeded) {
+         response =
+         "Your concern requires assistance from our human support team. " +
+         "I'm escalating your request to a support agent.";
+         } else if (
+         analysis.clarificationNeeded &&
+         analysis.clarificationMessage
+          ) {
+         response = analysis.clarificationMessage;
+        } else {
+        response =
+       `Thank you for contacting us. I understand your concern regarding ${category.toLowerCase()}. I'm here to help you with the next steps.`;
+     }
 
     // Save conversation in MongoDB
     const conversation = await Conversation.create({
       transcript,
       category,
       priority,
+      language,
       response,
-      status: "Open",
+      status: analysis.escalationNeeded ? "Escalated" : "Open",
     });
 
     // Create support ticket in MongoDB
@@ -369,7 +423,7 @@ app.post("/api/understand", async (req, res) => {
       description: transcript,
       requestedAction,
       conversationId: conversation._id,
-      status: "Open",
+      status: analysis.escalationNeeded ? "Escalated" : "Open",
     });
 
     res.json({
@@ -380,15 +434,20 @@ app.post("/api/understand", async (req, res) => {
         orderId,
         requestedAction,
         summary,
+        language,
+        clarificationNeeded: analysis.clarificationNeeded,
+        clarificationMessage: analysis.clarificationMessage,
+        escalationNeeded: analysis.escalationNeeded,
+        escalationReason: analysis.escalationReason,
       },
       response,
       conversationId: conversation._id,
       ticketId: ticket._id,
-      message: "Conversation and support ticket saved successfully!",
+      message: "AI analysis completed and support ticket saved successfully!",
     });
 
   } catch (error) {
-    console.error("Complaint Understanding Error:", error.message);
+    console.error("AI Complaint Understanding Error:", error.message);
 
     res.status(500).json({
       success: false,

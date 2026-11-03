@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Plus,
+  Headset,
 } from "lucide-react";
 
 function SupportTickets() {
@@ -54,39 +55,39 @@ function SupportTickets() {
     return matchesSearch && matchesStatus;
   });
 
-  
-const updateStatus = async (id, newStatus) => {
-  try {
-    const response = await fetch(
-      `http://localhost:5001/api/tickets/${id}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ status: newStatus }),
+  const updateStatus = async (id, newStatus) => {
+    try {
+      const response = await fetch(
+        `http://localhost:5001/api/tickets/${id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status: newStatus }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Failed to update ticket.");
       }
-    );
 
-    const data = await response.json();
-
-    if (!response.ok || !data.success) {
-      throw new Error(data.message || "Failed to update ticket.");
+      setTickets((currentTickets) =>
+        currentTickets.map((ticket) =>
+          ticket._id === id
+            ? {
+                ...ticket,
+                status: data.ticket.status,
+              }
+            : ticket
+        )
+      );
+    } catch (error) {
+      alert(error.message);
     }
-
-    setTickets((currentTickets) =>
-      currentTickets.map((ticket) =>
-        ticket._id === id
-          ? { ...ticket, status: data.ticket.status }
-          : ticket
-      )
-    );
-
-  } catch (error) {
-    alert(error.message);
-  }
-};
-
+  };
 
   const openCount = tickets.filter(
     (ticket) => ticket.status === "Open"
@@ -98,6 +99,10 @@ const updateStatus = async (id, newStatus) => {
 
   const resolvedCount = tickets.filter(
     (ticket) => ticket.status === "Resolved"
+  ).length;
+
+  const escalatedCount = tickets.filter(
+    (ticket) => ticket.status === "Escalated"
   ).length;
 
   const formatDate = (date) => {
@@ -115,7 +120,9 @@ const updateStatus = async (id, newStatus) => {
       {/* Heading */}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h2 className="text-2xl font-bold md:text-3xl">Support Tickets</h2>
+          <h2 className="text-2xl font-bold md:text-3xl">
+            Support Tickets
+          </h2>
           <p className="mt-2 text-sm text-slate-500">
             Track and manage customer support requests.
           </p>
@@ -132,7 +139,8 @@ const updateStatus = async (id, newStatus) => {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-500">Open Tickets</p>
@@ -156,6 +164,20 @@ const updateStatus = async (id, newStatus) => {
           </div>
           <h3 className="mt-3 text-3xl font-bold">{resolvedCount}</h3>
         </div>
+
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-rose-700">Escalated Tickets</p>
+            <Headset className="text-rose-600" size={20} />
+          </div>
+          <h3 className="mt-3 text-3xl font-bold text-rose-700">
+            {escalatedCount}
+          </h3>
+          <p className="mt-1 text-xs text-rose-600">
+            Require human attention
+          </p>
+        </div>
+
       </div>
 
       {/* Search and Filter */}
@@ -189,6 +211,7 @@ const updateStatus = async (id, newStatus) => {
 
       {/* Tickets Table */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
+
         <div className="mb-5 flex items-center gap-2">
           <Ticket size={20} className="text-violet-600" />
           <h3 className="text-lg font-bold">All Support Tickets</h3>
@@ -204,7 +227,8 @@ const updateStatus = async (id, newStatus) => {
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[750px] text-left">
+            <table className="w-full min-w-[850px] text-left">
+
               <thead>
                 <tr className="border-b border-slate-100 text-xs text-slate-400">
                   <th className="pb-4 font-medium">TICKET ID</th>
@@ -220,7 +244,11 @@ const updateStatus = async (id, newStatus) => {
                 {filteredTickets.map((ticket) => (
                   <tr
                     key={ticket._id}
-                    className="border-b border-slate-50 last:border-0"
+                    className={`border-b border-slate-50 last:border-0 ${
+                      ticket.status === "Escalated"
+                        ? "bg-rose-50/60"
+                        : ""
+                    }`}
                   >
                     <td className="py-4 text-sm font-semibold text-violet-600">
                       TKT-{ticket._id.slice(-6).toUpperCase()}
@@ -255,7 +283,11 @@ const updateStatus = async (id, newStatus) => {
                         onChange={(e) =>
                           updateStatus(ticket._id, e.target.value)
                         }
-                        className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-violet-500"
+                        className={`rounded-lg border px-2 py-2 text-xs font-medium outline-none focus:border-violet-500 ${
+                          ticket.status === "Escalated"
+                            ? "border-rose-200 bg-rose-50 text-rose-700"
+                            : "border-slate-200 bg-white"
+                        }`}
                       >
                         <option>Open</option>
                         <option>In Progress</option>
@@ -280,6 +312,7 @@ const updateStatus = async (id, newStatus) => {
                     </td>
                   </tr>
                 )}
+
               </tbody>
             </table>
           </div>
