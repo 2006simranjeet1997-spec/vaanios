@@ -1,2 +1,4 @@
 node_modules/
 .env
+testGemini.js
+test-voice.wav
