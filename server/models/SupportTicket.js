@@ -1,3 +1,4 @@
+
 const mongoose = require("mongoose");
 
 const supportTicketSchema = new mongoose.Schema(
@@ -31,6 +32,12 @@ const supportTicketSchema = new mongoose.Schema(
     requestedAction: {
       type: String,
       default: "Customer assistance",
+    },
+
+    // Reason why the ticket needs human support
+    escalationReason: {
+      type: String,
+      default: "",
     },
 
     status: {

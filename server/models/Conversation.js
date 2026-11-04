@@ -34,7 +34,7 @@ const conversationSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["Open", "Resolved", "Escalated"],
+      enum: ["Open", "In Progress", "Resolved", "Escalated"],
       default: "Open",
     },
   },

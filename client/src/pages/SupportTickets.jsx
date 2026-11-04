@@ -47,7 +47,8 @@ function SupportTickets() {
       customer.toLowerCase().includes(search.toLowerCase()) ||
       ticketId.toLowerCase().includes(search.toLowerCase()) ||
       issue.toLowerCase().includes(search.toLowerCase()) ||
-      (ticket.description || "").toLowerCase().includes(search.toLowerCase());
+      (ticket.description || "").toLowerCase().includes(search.toLowerCase()) ||
+      (ticket.escalationReason || "").toLowerCase().includes(search.toLowerCase());
 
     const matchesStatus =
       statusFilter === "All" || ticket.status === statusFilter;
@@ -116,7 +117,6 @@ function SupportTickets() {
 
   return (
     <div className="space-y-6 text-slate-800">
-
       {/* Heading */}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
@@ -140,7 +140,6 @@ function SupportTickets() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-500">Open Tickets</p>
@@ -177,7 +176,6 @@ function SupportTickets() {
             Require human attention
           </p>
         </div>
-
       </div>
 
       {/* Search and Filter */}
@@ -211,7 +209,6 @@ function SupportTickets() {
 
       {/* Tickets Table */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
-
         <div className="mb-5 flex items-center gap-2">
           <Ticket size={20} className="text-violet-600" />
           <h3 className="text-lg font-bold">All Support Tickets</h3>
@@ -227,8 +224,7 @@ function SupportTickets() {
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[850px] text-left">
-
+            <table className="w-full min-w-[1050px] text-left">
               <thead>
                 <tr className="border-b border-slate-100 text-xs text-slate-400">
                   <th className="pb-4 font-medium">TICKET ID</th>
@@ -236,6 +232,7 @@ function SupportTickets() {
                   <th className="pb-4 font-medium">ISSUE</th>
                   <th className="pb-4 font-medium">PRIORITY</th>
                   <th className="pb-4 font-medium">STATUS</th>
+                  <th className="pb-4 font-medium">ESCALATION REASON</th>
                   <th className="pb-4 font-medium">DATE</th>
                 </tr>
               </thead>
@@ -296,6 +293,16 @@ function SupportTickets() {
                       </select>
                     </td>
 
+                    <td className="py-4 text-sm">
+                      {ticket.escalationReason ? (
+                        <span className="inline-block max-w-[260px] whitespace-normal rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                          {ticket.escalationReason}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+
                     <td className="py-4 text-sm text-slate-400">
                       {formatDate(ticket.createdAt)}
                     </td>
@@ -305,14 +312,13 @@ function SupportTickets() {
                 {filteredTickets.length === 0 && (
                   <tr>
                     <td
-                      colSpan="6"
+                      colSpan="7"
                       className="py-10 text-center text-sm text-slate-400"
                     >
                       No tickets found.
                     </td>
                   </tr>
                 )}
-
               </tbody>
             </table>
           </div>
