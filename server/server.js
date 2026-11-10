@@ -2,13 +2,19 @@
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
+const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
 const connectDB = require("./config/db");
 
 const Conversation = require("./models/Conversation");
 const SupportTicket = require("./models/SupportTicket");
+const Notification = require("./models/Notification");
+const AppSettings = require("./models/AppSettings");
 const generateGeminiResponse = require("./services/geminiService");
+
+const authRoutes = require("./routes/authRoutes");
+const protect = require("./middleware/authMiddleware");
 
 const app = express();
 
@@ -19,8 +25,77 @@ const upload = multer({
   },
 });
 
-app.use(cors());
+// ==========================================
+// MIDDLEWARE
+// ==========================================
+
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    credentials: true,
+  })
+);
+
 app.use(express.json());
+app.use(cookieParser());
+
+// ==========================================
+// AUTHENTICATION ROUTES
+// ==========================================
+
+console.log("authRoutes:", typeof authRoutes);
+console.log("protect:", typeof protect);
+
+app.use("/api/auth", authRoutes);
+
+// Protect all remaining API routes
+app.use("/api", protect);
+
+// ==========================================
+// NOTIFICATION HELPER
+// ==========================================
+
+const createNotification = async ({
+  title,
+  message,
+  type,
+  ticketId = null,
+}) => {
+  try {
+    const settings = await AppSettings.findOne();
+
+    const preferences = settings?.notificationPreferences || {
+      newTicket: true,
+      highPriority: true,
+      escalation: true,
+      statusUpdate: true,
+    };
+
+    const preferenceMap = {
+      "New Ticket": "newTicket",
+      "High Priority": "highPriority",
+      Escalation: "escalation",
+      "Status Update": "statusUpdate",
+    };
+
+    const preferenceKey = preferenceMap[type];
+
+    if (preferenceKey && preferences[preferenceKey] === false) {
+      console.log(`Notification disabled: ${type}`);
+      return null;
+    }
+
+    return await Notification.create({
+      title,
+      message,
+      type,
+      ticketId,
+    });
+  } catch (error) {
+    console.error("Notification Creation Error:", error.message);
+    return null;
+  }
+};
 
 // ==========================================
 // BACKEND HEALTH CHECK
@@ -76,16 +151,13 @@ app.post("/api/stt", upload.single("audio"), async (req, res) => {
     formData.append("model", "prisma-v3.0");
     formData.append("language_code", "indic-auto");
 
-    const response = await fetch(
-      "https://api.vachana.ai/stt/v3",
-      {
-        method: "POST",
-        headers: {
-          "X-API-Key-ID": process.env.GNANI_API_KEY,
-        },
-        body: formData,
-      }
-    );
+    const response = await fetch("https://api.vachana.ai/stt/v3", {
+      method: "POST",
+      headers: {
+        "X-API-Key-ID": process.env.GNANI_API_KEY,
+      },
+      body: formData,
+    });
 
     const result = await response.json();
 
@@ -101,7 +173,6 @@ app.post("/api/stt", upload.single("audio"), async (req, res) => {
     }
 
     res.json(result);
-
   } catch (error) {
     console.error("Prisma STT Error:", error.message);
 
@@ -178,9 +249,7 @@ app.post("/api/tts", async (req, res) => {
       });
     }
 
-    const audioBuffer = Buffer.from(
-      await response.arrayBuffer()
-    );
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
 
     res.set({
       "Content-Type": "audio/wav",
@@ -188,7 +257,6 @@ app.post("/api/tts", async (req, res) => {
     });
 
     res.send(audioBuffer);
-
   } catch (error) {
     console.error("Timbre TTS Error:", error.message);
 
@@ -200,26 +268,228 @@ app.post("/api/tts", async (req, res) => {
 });
 
 // ==========================================
+// GET APP SETTINGS
+// ==========================================
+
+app.get("/api/settings", async (req, res) => {
+  try {
+    const settings = await AppSettings.findOneAndUpdate(
+      {},
+      { $setOnInsert: {} },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    res.json({
+      success: true,
+      settings,
+    });
+  } catch (error) {
+    console.error("Fetch Settings Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch settings.",
+    });
+  }
+});
+
+// ==========================================
+// UPDATE APP SETTINGS
+// ==========================================
+
+app.put("/api/settings", async (req, res) => {
+  try {
+    const { notificationPreferences } = req.body;
+
+    if (
+      !notificationPreferences ||
+      typeof notificationPreferences !== "object"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid notification preferences.",
+      });
+    }
+
+    const allowedKeys = [
+      "newTicket",
+      "highPriority",
+      "escalation",
+      "statusUpdate",
+    ];
+
+    for (const key of allowedKeys) {
+      if (typeof notificationPreferences[key] !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid value for ${key}.`,
+        });
+      }
+    }
+
+    const settings = await AppSettings.findOneAndUpdate(
+      {},
+      {
+        $set: {
+          notificationPreferences,
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Notification preferences saved successfully.",
+      settings,
+    });
+  } catch (error) {
+    console.error("Update Settings Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update settings.",
+    });
+  }
+});
+
+// ==========================================
+// GET ALL NOTIFICATIONS
+// ==========================================
+
+app.get("/api/notifications", async (req, res) => {
+  try {
+    const notifications = await Notification.find().sort({
+      createdAt: -1,
+    });
+
+    const unreadCount = await Notification.countDocuments({
+      isRead: false,
+    });
+
+    res.json({
+      success: true,
+      count: notifications.length,
+      unreadCount,
+      notifications,
+    });
+  } catch (error) {
+    console.error("Fetch Notifications Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch notifications.",
+    });
+  }
+});
+
+// ==========================================
+// MARK SINGLE NOTIFICATION AS READ
+// ==========================================
+
+app.patch("/api/notifications/:id/read", async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndUpdate(
+      req.params.id,
+      { isRead: true },
+      { returnDocument: "after" }
+    );
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found.",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Notification marked as read.",
+      notification,
+    });
+  } catch (error) {
+    console.error("Mark Notification Read Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Could not update notification.",
+    });
+  }
+});
+
+// ==========================================
+// MARK ALL NOTIFICATIONS AS READ
+// ==========================================
+
+app.patch("/api/notifications/read-all", async (req, res) => {
+  try {
+    await Notification.updateMany(
+      { isRead: false },
+      { isRead: true }
+    );
+
+    res.json({
+      success: true,
+      message: "All notifications marked as read.",
+    });
+  } catch (error) {
+    console.error("Mark All Read Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Could not update notifications.",
+    });
+  }
+});
+
+// ==========================================
 // GET ALL CONVERSATIONS
 // ==========================================
 
 app.get("/api/conversations", async (req, res) => {
   try {
-    const conversations = await Conversation.find()
-      .sort({ createdAt: -1 });
+    const conversations = await Conversation.find().sort({
+      createdAt: -1,
+    });
+
+    const updatedConversations = await Promise.all(
+      conversations.map(async (conversation) => {
+        const ticket = await SupportTicket.findOne({
+          conversationId: conversation._id,
+        }).select("customerName");
+
+        const data = conversation.toObject();
+
+        if (
+          (!data.customerName || data.customerName === "Guest") &&
+          ticket?.customerName
+        ) {
+          data.customerName = ticket.customerName;
+        }
+
+        return data;
+      })
+    );
 
     res.json({
       success: true,
-      count: conversations.length,
-      conversations,
+      count: updatedConversations.length,
+      conversations: updatedConversations,
     });
-
   } catch (error) {
-    console.error("Fetch Conversations Error:", error.message);
+    console.error("Error fetching conversations:", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch conversations.",
+      message: "Failed to fetch conversations",
     });
   }
 });
@@ -239,7 +509,6 @@ app.get("/api/tickets", async (req, res) => {
       count: tickets.length,
       tickets,
     });
-
   } catch (error) {
     console.error("Fetch Tickets Error:", error.message);
 
@@ -272,7 +541,17 @@ app.patch("/api/tickets/:id", async (req, res) => {
       });
     }
 
-    // Find and update the support ticket
+    const existingTicket = await SupportTicket.findById(req.params.id);
+
+    if (!existingTicket) {
+      return res.status(404).json({
+        success: false,
+        message: "Support ticket not found.",
+      });
+    }
+
+    const previousStatus = existingTicket.status;
+
     const ticket = await SupportTicket.findByIdAndUpdate(
       req.params.id,
       { status },
@@ -282,14 +561,6 @@ app.patch("/api/tickets/:id", async (req, res) => {
       }
     );
 
-    if (!ticket) {
-      return res.status(404).json({
-        success: false,
-        message: "Support ticket not found.",
-      });
-    }
-
-    // Keep the linked conversation status synchronized
     if (ticket.conversationId) {
       await Conversation.findByIdAndUpdate(
         ticket.conversationId,
@@ -298,12 +569,24 @@ app.patch("/api/tickets/:id", async (req, res) => {
       );
     }
 
+    if (previousStatus !== status) {
+      const isEscalated = status === "Escalated";
+
+      await createNotification({
+        title: isEscalated
+          ? "Ticket Escalated"
+          : "Ticket Status Updated",
+        message: `Ticket for ${ticket.customerName} changed from ${previousStatus} to ${status}.`,
+        type: isEscalated ? "Escalation" : "Status Update",
+        ticketId: ticket._id,
+      });
+    }
+
     res.json({
       success: true,
       message: "Ticket and conversation status updated successfully!",
       ticket,
     });
-
   } catch (error) {
     console.error("Ticket Update Error:", error.message);
 
@@ -320,9 +603,10 @@ app.patch("/api/tickets/:id", async (req, res) => {
 
 app.post("/api/understand", async (req, res) => {
   try {
-    const { transcript } = req.body;
+    console.log("UNDERSTAND API ROUTE HIT");
 
-    // Validate transcript
+    const { transcript, customerName } = req.body;
+
     if (
       !transcript ||
       typeof transcript !== "string" ||
@@ -334,7 +618,11 @@ app.post("/api/understand", async (req, res) => {
       });
     }
 
-    // Send customer transcript to Gemini
+    const normalizedCustomerName =
+      typeof customerName === "string" && customerName.trim()
+        ? customerName.trim()
+        : "Guest";
+
     const analysis = await generateGeminiResponse(`
       You are an intelligent multilingual AI customer support assistant
       for an Indian e-commerce business.
@@ -364,9 +652,7 @@ app.post("/api/understand", async (req, res) => {
 
       7. clarificationNeeded: Return true if essential information
          is missing and the customer's request cannot proceed
-         without it. For order-specific delivery, refund, or
-         return requests, an order ID is generally required.
-         Otherwise return false.
+         without it.
 
       8. clarificationMessage:
          If clarificationNeeded is true, ask the customer for
@@ -414,7 +700,6 @@ app.post("/api/understand", async (req, res) => {
       Return accurate information based only on the customer's message.
     `);
 
-    // Validate priority against MongoDB enum
     const allowedPriorities = [
       "Low",
       "Normal",
@@ -445,7 +730,6 @@ app.post("/api/understand", async (req, res) => {
       ? analysis.clarificationMessage || ""
       : "";
 
-    // Generate customer-facing response
     let response = "";
 
     if (escalationNeeded) {
@@ -459,13 +743,13 @@ app.post("/api/understand", async (req, res) => {
         `Thank you for contacting us. I understand your concern regarding ${category.toLowerCase()}. I'm here to help you with the next steps.`;
     }
 
-    // Determine initial status
     const initialStatus = escalationNeeded
       ? "Escalated"
       : "Open";
 
-    // Save conversation in MongoDB
+    // Save conversation
     const conversation = await Conversation.create({
+      customerName: normalizedCustomerName,
       transcript: transcript.trim(),
       category,
       priority,
@@ -474,8 +758,9 @@ app.post("/api/understand", async (req, res) => {
       status: initialStatus,
     });
 
-    // Create support ticket in MongoDB
+    // Automatically create support ticket
     const ticket = await SupportTicket.create({
+      customerName: normalizedCustomerName,
       orderId,
       category,
       priority,
@@ -486,9 +771,37 @@ app.post("/api/understand", async (req, res) => {
       status: initialStatus,
     });
 
+    // ==========================================
+    // AUTOMATIC NOTIFICATIONS
+    // ==========================================
+
+    await createNotification({
+      title: "New Support Ticket",
+      message: `A new ticket has been created for ${normalizedCustomerName}.`,
+      type: "New Ticket",
+      ticketId: ticket._id,
+    });
+
+    if (priority === "High" || priority === "Urgent") {
+      await createNotification({
+        title: `${priority} Priority Complaint`,
+        message: `${normalizedCustomerName} has submitted a ${priority.toLowerCase()} priority complaint.`,
+        type: "High Priority",
+        ticketId: ticket._id,
+      });
+    }
+
+    if (escalationNeeded) {
+      await createNotification({
+        title: "Complaint Escalated",
+        message: `A complaint from ${normalizedCustomerName} requires human support. Reason: ${escalationReason}`,
+        type: "Escalation",
+        ticketId: ticket._id,
+      });
+    }
+
     res.json({
       success: true,
-
       analysis: {
         category,
         priority,
@@ -501,20 +814,14 @@ app.post("/api/understand", async (req, res) => {
         escalationNeeded,
         escalationReason,
       },
-
       response,
       conversationId: conversation._id,
       ticketId: ticket._id,
-
       message:
         "AI analysis completed and support ticket saved successfully!",
     });
-
   } catch (error) {
-    console.error(
-      "AI Complaint Understanding Error:",
-      error.message
-    );
+    console.error("AI Complaint Understanding Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -523,8 +830,11 @@ app.post("/api/understand", async (req, res) => {
   }
 });
 
+// ==========================================
+// START SERVER
+// ==========================================
 
-const PORT = 5001;
+const PORT = process.env.PORT || 5001;
 
 const startServer = async () => {
   try {
@@ -533,7 +843,6 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`VaaniOS server running on port ${PORT}`);
     });
-
   } catch (error) {
     console.error("Server startup failed:", error.message);
     process.exit(1);

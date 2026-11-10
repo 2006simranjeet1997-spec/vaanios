@@ -6,9 +6,17 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Plus,
   Headset,
+  X,
+  CalendarDays,
+  Tag,
+  AlertTriangle,
+  Package,
+  FileText,
 } from "lucide-react";
+
+const API_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:5001";
 
 function SupportTickets() {
   const [tickets, setTickets] = useState([]);
@@ -16,39 +24,96 @@ function SupportTickets() {
   const [statusFilter, setStatusFilter] = useState("All");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selectedTicket, setSelectedTicket] = useState(null);
+  const [updating, setUpdating] = useState(false);
+
+  // Fetch automatically generated tickets
+  const fetchTickets = async () => {
+    try {
+      setError("");
+
+      const response = await fetch(`${API_URL}/api/tickets`, {
+        credentials: "include",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load support tickets."
+        );
+      }
+
+      setTickets(data.tickets || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchTickets = async () => {
-      try {
-        const response = await fetch("http://localhost:5001/api/tickets");
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-          throw new Error("Failed to load support tickets.");
-        }
-
-        setTickets(data.tickets);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchTickets();
   }, []);
 
+  // Update ticket status
+  const updateStatus = async (id, newStatus) => {
+    setUpdating(true);
+
+    try {
+      const response = await fetch(`${API_URL}/api/tickets/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to update ticket."
+        );
+      }
+
+      setTickets((current) =>
+        current.map((ticket) =>
+          ticket._id === id
+            ? { ...ticket, ...data.ticket }
+            : ticket
+        )
+      );
+
+      setSelectedTicket((current) =>
+        current?._id === id
+          ? { ...current, ...data.ticket }
+          : current
+      );
+    } catch (err) {
+      alert(err.message);
+      fetchTickets();
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  // Search and status filtering
   const filteredTickets = tickets.filter((ticket) => {
     const customer = ticket.customerName || "Guest";
     const issue = ticket.category || "";
     const ticketId = `TKT-${ticket._id.slice(-6).toUpperCase()}`;
 
+    const searchTerm = search.toLowerCase();
+
     const matchesSearch =
-      customer.toLowerCase().includes(search.toLowerCase()) ||
-      ticketId.toLowerCase().includes(search.toLowerCase()) ||
-      issue.toLowerCase().includes(search.toLowerCase()) ||
-      (ticket.description || "").toLowerCase().includes(search.toLowerCase()) ||
-      (ticket.escalationReason || "").toLowerCase().includes(search.toLowerCase());
+      customer.toLowerCase().includes(searchTerm) ||
+      ticketId.toLowerCase().includes(searchTerm) ||
+      issue.toLowerCase().includes(searchTerm) ||
+      (ticket.description || "").toLowerCase().includes(searchTerm) ||
+      (ticket.orderId || "").toLowerCase().includes(searchTerm) ||
+      (ticket.escalationReason || "").toLowerCase().includes(searchTerm);
 
     const matchesStatus =
       statusFilter === "All" || ticket.status === statusFilter;
@@ -56,40 +121,7 @@ function SupportTickets() {
     return matchesSearch && matchesStatus;
   });
 
-  const updateStatus = async (id, newStatus) => {
-    try {
-      const response = await fetch(
-        `http://localhost:5001/api/tickets/${id}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ status: newStatus }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || "Failed to update ticket.");
-      }
-
-      setTickets((currentTickets) =>
-        currentTickets.map((ticket) =>
-          ticket._id === id
-            ? {
-                ...ticket,
-                status: data.ticket.status,
-              }
-            : ticket
-        )
-      );
-    } catch (error) {
-      alert(error.message);
-    }
-  };
-
+  // Ticket statistics
   const openCount = tickets.filter(
     (ticket) => ticket.status === "Open"
   ).length;
@@ -106,6 +138,7 @@ function SupportTickets() {
     (ticket) => ticket.status === "Escalated"
   ).length;
 
+  // Helpers
   const formatDate = (date) => {
     if (!date) return "Unknown";
 
@@ -115,6 +148,11 @@ function SupportTickets() {
     });
   };
 
+  const getTicketId = (id) =>
+    `TKT-${id.slice(-6).toUpperCase()}`;
+
+  const closeDetails = () => setSelectedTicket(null);
+
   return (
     <div className="space-y-6 text-slate-800">
       {/* Heading */}
@@ -123,19 +161,11 @@ function SupportTickets() {
           <h2 className="text-2xl font-bold md:text-3xl">
             Support Tickets
           </h2>
+
           <p className="mt-2 text-sm text-slate-500">
-            Track and manage customer support requests.
+            Track and manage customer support requests generated by VaaniOS AI.
           </p>
         </div>
-
-        <button
-          disabled
-          title="Ticket creation will be enabled in a later step."
-          className="inline-flex cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-violet-400 px-5 py-3 text-sm font-semibold text-white opacity-70"
-        >
-          <Plus size={18} />
-          Create Ticket
-        </button>
       </div>
 
       {/* Summary Cards */}
@@ -145,7 +175,10 @@ function SupportTickets() {
             <p className="text-sm text-slate-500">Open Tickets</p>
             <AlertCircle className="text-rose-500" size={20} />
           </div>
-          <h3 className="mt-3 text-3xl font-bold">{openCount}</h3>
+
+          <h3 className="mt-3 text-3xl font-bold">
+            {openCount}
+          </h3>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -153,7 +186,10 @@ function SupportTickets() {
             <p className="text-sm text-slate-500">In Progress</p>
             <Clock className="text-amber-500" size={20} />
           </div>
-          <h3 className="mt-3 text-3xl font-bold">{progressCount}</h3>
+
+          <h3 className="mt-3 text-3xl font-bold">
+            {progressCount}
+          </h3>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -161,7 +197,10 @@ function SupportTickets() {
             <p className="text-sm text-slate-500">Resolved Tickets</p>
             <CheckCircle2 className="text-emerald-500" size={20} />
           </div>
-          <h3 className="mt-3 text-3xl font-bold">{resolvedCount}</h3>
+
+          <h3 className="mt-3 text-3xl font-bold">
+            {resolvedCount}
+          </h3>
         </div>
 
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5">
@@ -169,9 +208,11 @@ function SupportTickets() {
             <p className="text-sm text-rose-700">Escalated Tickets</p>
             <Headset className="text-rose-600" size={20} />
           </div>
+
           <h3 className="mt-3 text-3xl font-bold text-rose-700">
             {escalatedCount}
           </h3>
+
           <p className="mt-1 text-xs text-rose-600">
             Require human attention
           </p>
@@ -185,6 +226,7 @@ function SupportTickets() {
             size={18}
             className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
           />
+
           <input
             type="text"
             placeholder="Search tickets, customers or issues..."
@@ -209,9 +251,20 @@ function SupportTickets() {
 
       {/* Tickets Table */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
-        <div className="mb-5 flex items-center gap-2">
-          <Ticket size={20} className="text-violet-600" />
-          <h3 className="text-lg font-bold">All Support Tickets</h3>
+        <div className="mb-5 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Ticket size={20} className="text-violet-600" />
+            <h3 className="text-lg font-bold">
+              All Support Tickets
+            </h3>
+          </div>
+
+          <button
+            onClick={fetchTickets}
+            className="text-sm font-semibold text-violet-600 hover:text-violet-800"
+          >
+            Refresh
+          </button>
         </div>
 
         {loading ? (
@@ -219,9 +272,16 @@ function SupportTickets() {
             Loading support tickets...
           </p>
         ) : error ? (
-          <p className="py-10 text-center text-sm text-rose-500">
-            {error}
-          </p>
+          <div className="py-10 text-center">
+            <p className="text-sm text-rose-500">{error}</p>
+
+            <button
+              onClick={fetchTickets}
+              className="mt-3 text-sm font-semibold text-violet-600"
+            >
+              Try again
+            </button>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1050px] text-left">
@@ -241,14 +301,24 @@ function SupportTickets() {
                 {filteredTickets.map((ticket) => (
                   <tr
                     key={ticket._id}
-                    className={`border-b border-slate-50 last:border-0 ${
+                    onClick={() => setSelectedTicket(ticket)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedTicket(ticket);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Open ticket ${getTicketId(ticket._id)}`}
+                    className={`cursor-pointer border-b border-slate-50 transition hover:bg-violet-50/50 last:border-0 ${
                       ticket.status === "Escalated"
                         ? "bg-rose-50/60"
                         : ""
                     }`}
                   >
                     <td className="py-4 text-sm font-semibold text-violet-600">
-                      TKT-{ticket._id.slice(-6).toUpperCase()}
+                      {getTicketId(ticket._id)}
                     </td>
 
                     <td className="py-4 text-sm font-medium">
@@ -274,17 +344,17 @@ function SupportTickets() {
                       </span>
                     </td>
 
-                    <td className="py-4">
+                    <td
+                      className="py-4"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <select
                         value={ticket.status}
+                        disabled={updating}
                         onChange={(e) =>
                           updateStatus(ticket._id, e.target.value)
                         }
-                        className={`rounded-lg border px-2 py-2 text-xs font-medium outline-none focus:border-violet-500 ${
-                          ticket.status === "Escalated"
-                            ? "border-rose-200 bg-rose-50 text-rose-700"
-                            : "border-slate-200 bg-white"
-                        }`}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-medium outline-none focus:border-violet-500 disabled:opacity-50"
                       >
                         <option>Open</option>
                         <option>In Progress</option>
@@ -324,6 +394,189 @@ function SupportTickets() {
           </div>
         )}
       </section>
+
+      {/* TICKET DETAILS SIDE PANEL */}
+      {selectedTicket && (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Close ticket details"
+            onClick={closeDetails}
+            className="absolute inset-0 h-full w-full cursor-default bg-slate-900/35"
+          />
+
+          <aside className="absolute right-0 top-0 flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-violet-600">
+                  Ticket Details
+                </p>
+
+                <h3 className="mt-1 text-xl font-bold text-slate-800">
+                  {getTicketId(selectedTicket._id)}
+                </h3>
+              </div>
+
+              <button
+                onClick={closeDetails}
+                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                aria-label="Close details"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-6 overflow-y-auto p-6">
+              {/* Customer */}
+              <div className="flex items-center gap-4">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-100 text-lg font-bold text-violet-700">
+                  {(selectedTicket.customerName || "Guest")
+                    .charAt(0)
+                    .toUpperCase()}
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-slate-800">
+                    {selectedTicket.customerName || "Guest"}
+                  </h4>
+                  <p className="text-sm text-slate-500">Customer</p>
+                </div>
+              </div>
+
+              {/* Ticket Information */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-slate-400">
+                    <Tag size={16} />
+                    <span className="text-xs">Issue</span>
+                  </div>
+
+                  <p className="font-semibold text-slate-800">
+                    {selectedTicket.category || "Unknown"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-slate-400">
+                    <AlertTriangle size={16} />
+                    <span className="text-xs">Priority</span>
+                  </div>
+
+                  <p className="font-semibold text-slate-800">
+                    {selectedTicket.priority || "Normal"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-slate-400">
+                    <Package size={16} />
+                    <span className="text-xs">Order ID</span>
+                  </div>
+
+                  <p className="font-semibold text-slate-800">
+                    {selectedTicket.orderId || "Not provided"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-slate-400">
+                    <CalendarDays size={16} />
+                    <span className="text-xs">Created</span>
+                  </div>
+
+                  <p className="text-sm font-semibold text-slate-800">
+                    {formatDate(selectedTicket.createdAt)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-800">
+                  Ticket Status
+                </label>
+
+                <select
+                  value={selectedTicket.status}
+                  disabled={updating}
+                  onChange={(e) =>
+                    updateStatus(selectedTicket._id, e.target.value)
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-violet-500 disabled:opacity-50"
+                >
+                  <option>Open</option>
+                  <option>In Progress</option>
+                  <option>Resolved</option>
+                  <option>Escalated</option>
+                </select>
+              </div>
+
+              {/* Complaint */}
+              <div>
+                <h4 className="mb-3 flex items-center gap-2 font-semibold text-slate-800">
+                  <FileText size={17} className="text-violet-600" />
+                  Customer Complaint
+                </h4>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+                  {selectedTicket.description ||
+                    "No description available."}
+                </div>
+              </div>
+
+              {/* Requested Action */}
+              <div>
+                <h4 className="mb-3 font-semibold text-slate-800">
+                  Requested Action
+                </h4>
+
+                <div className="rounded-xl border border-violet-100 bg-violet-50 p-4 text-sm leading-6 text-slate-700">
+                  {selectedTicket.requestedAction ||
+                    "No action specified."}
+                </div>
+              </div>
+
+              {/* Escalation */}
+              {selectedTicket.escalationReason && (
+                <div>
+                  <h4 className="mb-3 flex items-center gap-2 font-semibold text-rose-700">
+                    <Headset size={17} />
+                    Escalation Reason
+                  </h4>
+
+                  <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-sm leading-6 text-rose-700">
+                    {selectedTicket.escalationReason}
+                  </div>
+                </div>
+              )}
+
+              {/* Linked Conversation */}
+              {selectedTicket.conversationId && (
+                <div>
+                  <h4 className="mb-2 font-semibold text-slate-800">
+                    Linked Conversation
+                  </h4>
+
+                  <p className="break-all rounded-xl bg-slate-50 p-4 text-xs text-slate-500">
+                    {typeof selectedTicket.conversationId === "object"
+                      ? selectedTicket.conversationId._id
+                      : selectedTicket.conversationId}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-100 p-5">
+              <button
+                onClick={closeDetails}
+                className="w-full rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white transition hover:bg-violet-700"
+              >
+                Close Details
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

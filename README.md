@@ -124,9 +124,13 @@ From the `server` directory:
 node server.js
 ```
 
-Backend runs at:
+Backend runs locally at:
 
 `http://localhost:5001`
+
+Deployed backend:
+
+`https://vaanios-backend.onrender.com`
 
 ### 6. Start the frontend
 

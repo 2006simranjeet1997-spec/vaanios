@@ -12,6 +12,7 @@ import {
 
 function VoiceAssistant() {
   const [language, setLanguage] = useState("Hindi");
+  const [customerName, setCustomerName] = useState("");
   const [transcript, setTranscript] = useState("");
   const [response, setResponse] = useState("");
   const [audioFile, setAudioFile] = useState(null);
@@ -34,6 +35,14 @@ function VoiceAssistant() {
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
 
+  // Clear generated audio safely
+  const clearGeneratedAudio = () => {
+    if (generatedAudio) {
+      URL.revokeObjectURL(generatedAudio);
+      setGeneratedAudio("");
+    }
+  };
+
   // Start microphone recording
   const startRecording = async () => {
     try {
@@ -41,9 +50,11 @@ function VoiceAssistant() {
       setTranscript("");
       setDetectedLanguage("");
       setComplaintAnalysis(null);
+      setResponse("");
       setRecordedAudio(null);
       setAudioFile(null);
       setRecordingTime(0);
+      clearGeneratedAudio();
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -108,7 +119,6 @@ function VoiceAssistant() {
       timerRef.current = setInterval(() => {
         setRecordingTime((previous) => previous + 1);
       }, 1000);
-
     } catch (err) {
       setError(
         "Microphone access denied or unavailable. Please check your browser permissions."
@@ -139,20 +149,20 @@ function VoiceAssistant() {
     setDetectedLanguage("");
     setComplaintAnalysis(null);
     setResponse("");
-
-    if (generatedAudio) {
-      URL.revokeObjectURL(generatedAudio);
-      setGeneratedAudio("");
-    }
+    clearGeneratedAudio();
 
     try {
       const formData = new FormData();
       formData.append("audio", audioFile);
 
-      const result = await fetch("http://localhost:5001/api/stt", {
-        method: "POST",
-        body: formData,
-      });
+      const result = await fetch(
+        `${import.meta.env.VITE_API_URL}/api/stt`,
+        {
+          method: "POST",
+          credentials: "include",
+          body: formData,
+        }
+      );
 
       const data = await result.json();
 
@@ -162,7 +172,6 @@ function VoiceAssistant() {
 
       setTranscript(data.transcript || "");
       setDetectedLanguage(data.detected_language_code || "");
-
     } catch (err) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -182,15 +191,20 @@ function VoiceAssistant() {
     setComplaintAnalysis(null);
 
     try {
-      const result = await fetch("http://localhost:5001/api/understand", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          transcript: transcript.trim(),
-        }),
-      });
+      const result = await fetch(
+        `${import.meta.env.VITE_API_URL}/api/understand`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            transcript: transcript.trim(),
+            customerName: customerName.trim() || "Guest",
+          }),
+        }
+      );
 
       const data = await result.json();
 
@@ -202,15 +216,11 @@ function VoiceAssistant() {
 
       setComplaintAnalysis(data.analysis);
       setResponse(data.response || "");
-
-      if (generatedAudio) {
-        URL.revokeObjectURL(generatedAudio);
-        setGeneratedAudio("");
-      }
-
+      clearGeneratedAudio();
     } catch (err) {
       setError(
-        err.message || "Something went wrong while understanding the complaint."
+        err.message ||
+          "Something went wrong while understanding the complaint."
       );
     } finally {
       setIsUnderstanding(false);
@@ -238,17 +248,21 @@ function VoiceAssistant() {
       const selectedSettings =
         languageSettings[language] || languageSettings.Hindi;
 
-      const result = await fetch("http://localhost:5001/api/tts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: response.trim(),
-          language: selectedSettings.language,
-          voice: selectedSettings.voice,
-        }),
-      });
+      const result = await fetch(
+        `${import.meta.env.VITE_API_URL}/api/tts`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: response.trim(),
+            language: selectedSettings.language,
+            voice: selectedSettings.voice,
+          }),
+        }
+      );
 
       if (!result.ok) {
         let message = "Voice generation failed.";
@@ -257,7 +271,7 @@ function VoiceAssistant() {
           const data = await result.json();
           message = data.message || data.details || message;
         } catch {
-          // Keep the default error message.
+          // Keep default error message.
         }
 
         throw new Error(message);
@@ -269,12 +283,8 @@ function VoiceAssistant() {
         throw new Error("Timbre returned an empty audio file.");
       }
 
-      if (generatedAudio) {
-        URL.revokeObjectURL(generatedAudio);
-      }
-
+      clearGeneratedAudio();
       setGeneratedAudio(URL.createObjectURL(audioBlob));
-
     } catch (err) {
       setError(
         err.message || "Something went wrong while generating voice."
@@ -294,16 +304,11 @@ function VoiceAssistant() {
     setComplaintAnalysis(null);
     setDetectedLanguage("");
     setError("");
-
-    if (generatedAudio) {
-      URL.revokeObjectURL(generatedAudio);
-      setGeneratedAudio("");
-    }
+    clearGeneratedAudio();
   };
 
   return (
     <div className="space-y-6 text-slate-800">
-
       {/* Heading */}
       <div>
         <h2 className="text-2xl font-bold md:text-3xl">
@@ -317,7 +322,6 @@ function VoiceAssistant() {
 
       {/* Language Selection */}
       <section className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 sm:flex-row sm:items-center">
-
         <div className="flex items-center gap-3">
           <div className="rounded-xl bg-violet-50 p-3 text-violet-600">
             <Languages size={22} />
@@ -345,7 +349,6 @@ function VoiceAssistant() {
 
       {/* Main Assistant Card */}
       <section className="rounded-2xl bg-gradient-to-r from-violet-700 to-indigo-600 p-8 text-center text-white">
-
         <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-white/15">
           <AudioLines size={38} />
         </div>
@@ -375,7 +378,6 @@ function VoiceAssistant() {
 
       {/* Speech to Text */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
         <div className="mb-5 flex items-center gap-3">
           <div className="rounded-xl bg-violet-50 p-3 text-violet-600">
             <Mic size={21} />
@@ -389,11 +391,33 @@ function VoiceAssistant() {
           </div>
         </div>
 
+        {/* Customer Name */}
+        <div className="mb-6">
+          <label
+            htmlFor="customerName"
+            className="mb-2 block text-sm font-medium text-slate-600"
+          >
+            Customer Name
+          </label>
+
+          <input
+            id="customerName"
+            type="text"
+            value={customerName}
+            onChange={(e) => setCustomerName(e.target.value)}
+            placeholder="Enter customer's name"
+            maxLength={100}
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-violet-500"
+          />
+
+          <p className="mt-1 text-xs text-slate-400">
+            If left empty, the customer will be saved as Guest.
+          </p>
+        </div>
+
         {/* Live Microphone Recording */}
         <div className="mb-6 rounded-xl border border-violet-200 bg-violet-50/50 p-5">
-
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-
             <div>
               <h4 className="font-semibold text-slate-800">
                 Record Live Audio
@@ -416,7 +440,6 @@ function VoiceAssistant() {
               <Mic size={18} />
               {isRecording ? "Stop Recording" : "Start Recording"}
             </button>
-
           </div>
 
           {isRecording && (
@@ -438,7 +461,6 @@ function VoiceAssistant() {
               />
             </div>
           )}
-
         </div>
 
         {/* Audio Upload */}
@@ -447,7 +469,6 @@ function VoiceAssistant() {
         </label>
 
         <div className="rounded-xl border-2 border-dashed border-violet-200 bg-violet-50/50 p-5">
-
           <input
             type="file"
             accept="audio/*"
@@ -464,7 +485,6 @@ function VoiceAssistant() {
               Selected: {audioFile.name}
             </p>
           )}
-
         </div>
 
         <button
@@ -494,7 +514,6 @@ function VoiceAssistant() {
 
         {/* Transcript */}
         <div className="mt-6">
-
           <label className="mb-2 block text-sm font-medium text-slate-600">
             Transcribed Customer Speech
           </label>
@@ -505,6 +524,7 @@ function VoiceAssistant() {
               setTranscript(e.target.value);
               setComplaintAnalysis(null);
               setResponse("");
+              clearGeneratedAudio();
             }}
             placeholder="Your actual transcription will appear here..."
             className="min-h-36 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm outline-none focus:border-violet-500"
@@ -540,13 +560,11 @@ function VoiceAssistant() {
           {/* Complaint Analysis */}
           {complaintAnalysis && (
             <div className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
-
               <h4 className="mb-3 font-semibold text-slate-800">
                 Complaint Analysis
               </h4>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-
                 <div>
                   <p className="text-xs text-slate-500">Category</p>
                   <p className="font-medium text-slate-800">
@@ -576,41 +594,39 @@ function VoiceAssistant() {
                 </div>
 
                 <div>
-                 <p className="text-xs text-slate-500">Detected Language</p>
-                 <p className="font-medium text-slate-800">
+                  <p className="text-xs text-slate-500">Detected Language</p>
+                  <p className="font-medium text-slate-800">
                     {complaintAnalysis.language}
-                 </p>
+                  </p>
                 </div>
-
               </div>
 
               <p className="mt-3 border-t border-indigo-100 pt-3 text-sm text-slate-600">
                 {complaintAnalysis.summary}
               </p>
-                 {complaintAnalysis.clarificationNeeded && (
-              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="font-semibold text-amber-800">
-                Additional Information Required
-              </p>
-              <p className="mt-2 text-sm text-amber-700">
-                {complaintAnalysis.clarificationMessage}
-              </p>
-             </div>
-              )}
 
+              {complaintAnalysis.clarificationNeeded && (
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                  <p className="font-semibold text-amber-800">
+                    Additional Information Required
+                  </p>
+
+                  <p className="mt-2 text-sm text-amber-700">
+                    {complaintAnalysis.clarificationMessage}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
           <p className="mt-3 text-xs text-slate-400">
             Selected language: {language}
           </p>
-
         </div>
       </section>
 
       {/* Text to Speech */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
         <div className="mb-5 flex items-center gap-3">
           <div className="rounded-xl bg-indigo-50 p-3 text-indigo-600">
             <Volume2 size={21} />
@@ -656,7 +672,6 @@ function VoiceAssistant() {
 
         {generatedAudio && (
           <div className="mt-4 rounded-xl border border-green-200 bg-green-50 p-4">
-
             <p className="mb-2 flex items-center gap-2 text-sm font-medium text-green-700">
               <CheckCircle2 size={16} />
               Voice generated successfully!
@@ -667,7 +682,6 @@ function VoiceAssistant() {
               src={generatedAudio}
               className="w-full"
             />
-
           </div>
         )}
 
@@ -676,19 +690,16 @@ function VoiceAssistant() {
             {error}
           </p>
         )}
-
       </section>
 
       {/* Integration Status */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
-
         <div className="mb-4 flex items-center gap-2">
           <Sparkles size={19} className="text-violet-600" />
           <h3 className="font-bold">AI Model Integrations</h3>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-
           <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4">
             <div>
               <p className="font-semibold">Prisma V3</p>
@@ -710,10 +721,8 @@ function VoiceAssistant() {
               Connected
             </span>
           </div>
-
         </div>
       </section>
-
     </div>
   );
 }
