@@ -1,3 +1,4 @@
+
 import {
   LayoutDashboard,
   MessageSquare,
@@ -20,6 +21,7 @@ const menuItems = [
 function Sidebar() {
   return (
     <aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-white p-6 md:flex md:flex-col">
+
       {/* Logo */}
       <div className="mb-10 flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-600 text-xl font-bold text-white">
@@ -27,8 +29,13 @@ function Sidebar() {
         </div>
 
         <div>
-          <h1 className="text-xl font-bold">VaaniOS</h1>
-          <p className="text-xs text-slate-400">VOICE INTELLIGENCE</p>
+          <h1 className="text-xl font-bold text-slate-900">
+            Vaani<span className="text-violet-600">OS</span>
+          </h1>
+
+          <p className="text-xs font-medium tracking-wider text-slate-500">
+            VOICE INTELLIGENCE
+          </p>
         </div>
       </div>
 
@@ -83,8 +90,12 @@ function Sidebar() {
           </div>
 
           <div>
-            <p className="text-sm font-semibold">Vaani Admin</p>
-            <p className="text-xs text-slate-400">Business account</p>
+            <p className="text-sm font-semibold text-slate-900">
+              Vaani Admin
+            </p>
+            <p className="text-xs text-slate-400">
+              Business account
+            </p>
           </div>
         </div>
       </div>

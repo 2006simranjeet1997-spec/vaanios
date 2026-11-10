@@ -1,22 +1,48 @@
-
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const cookieParser = require("cookie-parser");
+const http = require("http");
+const { Server } = require("socket.io");
+const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 require("dotenv").config();
+
+const ffmpeg = require("fluent-ffmpeg");
+const { Readable } = require("stream");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const connectDB = require("./config/db");
 
+const Admin = require("./models/Admin");
+const Customer = require("./models/Customer");
 const Conversation = require("./models/Conversation");
 const SupportTicket = require("./models/SupportTicket");
 const Notification = require("./models/Notification");
 const AppSettings = require("./models/AppSettings");
+
 const generateGeminiResponse = require("./services/geminiService");
 
 const authRoutes = require("./routes/authRoutes");
+const customerAuthRoutes = require("./routes/customerAuthRoutes");
+
 const protect = require("./middleware/authMiddleware");
+const protectCustomer = require("./middleware/customerAuthMiddleware");
 
 const app = express();
+const server = http.createServer(app);
+
+const CLIENT_URL =
+  process.env.CLIENT_URL || "http://localhost:5173";
+
+const io = new Server(server, {
+  cors: {
+    origin: CLIENT_URL,
+    credentials: true,
+  },
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -26,30 +52,72 @@ const upload = multer({
 });
 
 // ==========================================
+// CHAT MESSAGE MODEL
+// ==========================================
+
+const chatMessageSchema = new mongoose.Schema(
+  {
+    ticketId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SupportTicket",
+      required: true,
+      index: true,
+    },
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+    senderRole: {
+      type: String,
+      enum: ["admin", "customer"],
+      required: true,
+    },
+    senderName: {
+      type: String,
+      required: true,
+    },
+    message: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 3000,
+    },
+  },
+  { timestamps: true }
+);
+
+const ChatMessage =
+  mongoose.models.ChatMessage ||
+  mongoose.model("ChatMessage", chatMessageSchema);
+
+// ==========================================
 // MIDDLEWARE
 // ==========================================
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: CLIENT_URL,
     credentials: true,
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+
+// ==========================================
+// HEALTH CHECK
+// ==========================================
+
+app.get("/", (req, res) => {
+  res.send("VaaniOS Backend is running!");
+});
 
 // ==========================================
 // AUTHENTICATION ROUTES
 // ==========================================
 
-console.log("authRoutes:", typeof authRoutes);
-console.log("protect:", typeof protect);
-
 app.use("/api/auth", authRoutes);
-
-// Protect all remaining API routes
-app.use("/api", protect);
+app.use("/api/customer-auth", customerAuthRoutes);
 
 // ==========================================
 // NOTIFICATION HELPER
@@ -81,16 +149,19 @@ const createNotification = async ({
     const preferenceKey = preferenceMap[type];
 
     if (preferenceKey && preferences[preferenceKey] === false) {
-      console.log(`Notification disabled: ${type}`);
       return null;
     }
 
-    return await Notification.create({
+    const notification = await Notification.create({
       title,
       message,
       type,
       ticketId,
     });
+
+    io.to("admins").emit("notification:new", notification);
+
+    return notification;
   } catch (error) {
     console.error("Notification Creation Error:", error.message);
     return null;
@@ -98,39 +169,280 @@ const createNotification = async ({
 };
 
 // ==========================================
-// BACKEND HEALTH CHECK
+// CUSTOMER ROUTES
 // ==========================================
 
-app.get("/", (req, res) => {
-  res.send("VaaniOS Backend is running!");
-});
+app.use("/api/customer", protectCustomer);
 
-// ==========================================
-// CHECK GNANI API KEY
-// ==========================================
-
-app.get("/api/config-check", (req, res) => {
-  const isConfigured = Boolean(process.env.GNANI_API_KEY);
-
-  res.json({
-    success: true,
-    gnaniApiKeyConfigured: isConfigured,
-    message: isConfigured
-      ? "Gnani API key loaded successfully!"
-      : "Gnani API key is missing.",
-  });
-});
-
-// ==========================================
-// PRISMA V3 - SPEECH TO TEXT
-// ==========================================
-
-app.post("/api/stt", upload.single("audio"), async (req, res) => {
+// GET CUSTOMER PROFILE
+app.get("/api/customer/profile", async (req, res) => {
   try {
-    if (!req.file) {
+    const customer = await Customer.findById(req.customer.id).select(
+      "-passwordHash"
+    );
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer account not found.",
+      });
+    }
+
+    res.json({ success: true, customer });
+  } catch (error) {
+    console.error("Customer Profile Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch customer profile.",
+    });
+  }
+});
+
+// CUSTOMER DASHBOARD
+app.get("/api/customer/dashboard", async (req, res) => {
+  try {
+    const customerId = req.customer.id;
+
+    const [
+      totalTickets,
+      openTickets,
+      inProgressTickets,
+      resolvedTickets,
+      recentTickets,
+    ] = await Promise.all([
+      SupportTicket.countDocuments({ customerId }),
+      SupportTicket.countDocuments({ customerId, status: "Open" }),
+      SupportTicket.countDocuments({
+        customerId,
+        status: "In Progress",
+      }),
+      SupportTicket.countDocuments({
+        customerId,
+        status: "Resolved",
+      }),
+      SupportTicket.find({ customerId })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate("conversationId"),
+    ]);
+
+    res.json({
+      success: true,
+      summary: {
+        totalTickets,
+        openTickets,
+        inProgressTickets,
+        resolvedTickets,
+      },
+      recentTickets,
+    });
+  } catch (error) {
+    console.error("Customer Dashboard Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to load customer dashboard.",
+    });
+  }
+});
+
+// CUSTOMER TICKETS
+app.get("/api/customer/tickets", async (req, res) => {
+  try {
+    const tickets = await SupportTicket.find({
+      customerId: req.customer.id,
+    })
+      .populate("conversationId")
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: tickets.length,
+      tickets,
+    });
+  } catch (error) {
+    console.error("Customer Tickets Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch tickets.",
+    });
+  }
+});
+
+// CUSTOMER CONVERSATIONS
+app.get("/api/customer/conversations", async (req, res) => {
+  try {
+    const conversations = await Conversation.find({
+      customerId: req.customer.id,
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: conversations.length,
+      conversations,
+    });
+  } catch (error) {
+    console.error("Customer Conversations Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch conversations.",
+    });
+  }
+});
+
+// ==========================================
+// CUSTOMER SPEECH TO TEXT
+// ==========================================
+
+
+
+app.post(
+  "/api/customer/stt",
+  upload.single("audio"),
+  async (req, res) => {
+    let inputPath;
+    let outputPath;
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "Please upload an audio file.",
+        });
+      }
+
+      if (!process.env.GNANI_API_KEY) {
+        return res.status(500).json({
+          success: false,
+          message: "Gnani API key is missing.",
+        });
+      }
+
+      inputPath = path.join(
+        os.tmpdir(),
+        `vaanios-${Date.now()}.webm`
+      );
+
+      outputPath = path.join(
+        os.tmpdir(),
+        `vaanios-${Date.now()}.wav`
+      );
+
+      fs.writeFileSync(inputPath, req.file.buffer);
+
+      await new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+          .toFormat("wav")
+          .audioCodec("pcm_s16le")
+          .audioFrequency(16000)
+          .audioChannels(1)
+          .on("end", resolve)
+          .on("error", reject)
+          .save(outputPath);
+      });
+
+      const wavBuffer = fs.readFileSync(outputPath);
+
+      console.log("Converted WAV size:", wavBuffer.length);
+
+      const formData = new FormData();
+
+      const audioBlob = new Blob([wavBuffer], {
+        type: "audio/wav",
+      });
+
+      formData.append(
+        "audio_file",
+        audioBlob,
+        "customer-recording.wav"
+      );
+
+      formData.append("model", "prisma-v3.0");
+      formData.append("language_code", "indic-auto");
+
+      const gnaniResponse = await fetch(
+        "https://api.vachana.ai/stt/v3",
+        {
+          method: "POST",
+          headers: {
+            "X-API-Key-ID": process.env.GNANI_API_KEY,
+          },
+          body: formData,
+        }
+      );
+
+      const responseBody = await gnaniResponse.text();
+
+      console.log("GNANI STT STATUS:", gnaniResponse.status);
+      console.log("GNANI STT RESPONSE:", responseBody);
+
+      if (!gnaniResponse.ok) {
+        return res.status(gnaniResponse.status).json({
+          success: false,
+          message: "Gnani Prisma request failed.",
+          details: responseBody,
+        });
+      }
+
+      let result;
+
+      try {
+        result = JSON.parse(responseBody);
+      } catch {
+        return res.status(502).json({
+          success: false,
+          message: "Unexpected response from Gnani.",
+          details: responseBody,
+        });
+      }
+
+      return res.json(result);
+    } catch (error) {
+      console.error("Customer STT Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Speech-to-text processing failed.",
+        details: error.message,
+      });
+    } finally {
+      if (inputPath && fs.existsSync(inputPath)) {
+        fs.unlinkSync(inputPath);
+      }
+
+      if (outputPath && fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    }
+  }
+);
+
+
+
+// ==========================================
+// CUSTOMER TEXT TO SPEECH
+// ==========================================
+
+
+app.post("/api/customer/tts", async (req, res) => {
+  try {
+    const {
+      text,
+      language = "hi-IN",
+      voice = "Nalini",
+    } = req.body;
+
+    if (
+      typeof text !== "string" ||
+      !text.trim() ||
+      text.length > 3000
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Please upload an audio file.",
+        message: "Please provide valid text of up to 3000 characters.",
       });
     }
 
@@ -141,50 +453,352 @@ app.post("/api/stt", upload.single("audio"), async (req, res) => {
       });
     }
 
-    const formData = new FormData();
+    const gnaniResponse = await fetch(
+      "https://api.vachana.ai/api/v1/tts/inference",
+      {
+        method: "POST",
+        headers: {
+          "X-API-Key-ID": process.env.GNANI_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: text.trim(),
+          voice,
+          model: "timbre-v2.5",
+          language,
+          speed: 1.0,
+          audio_config: {
+            sample_rate: 48000,
+            num_channels: 1,
+            sample_width: 2,
+            encoding: "linear_pcm",
+            container: "wav",
+          },
+        }),
+      }
+    );
 
-    const audioBlob = new Blob([req.file.buffer], {
-      type: req.file.mimetype || "audio/wav",
-    });
+    if (!gnaniResponse.ok) {
+      const errorText = await gnaniResponse.text();
 
-    formData.append("audio_file", audioBlob, req.file.originalname);
-    formData.append("model", "prisma-v3.0");
-    formData.append("language_code", "indic-auto");
+      console.error("Gnani TTS Error:", {
+        status: gnaniResponse.status,
+        response: errorText,
+      });
 
-    const response = await fetch("https://api.vachana.ai/stt/v3", {
-      method: "POST",
-      headers: {
-        "X-API-Key-ID": process.env.GNANI_API_KEY,
-      },
-      body: formData,
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      console.error("Prisma API Status:", response.status);
-      console.error("Prisma API Details:", result);
-
-      return res.status(response.status).json({
+      return res.status(gnaniResponse.status).json({
         success: false,
-        message: "Gnani Prisma request failed.",
-        details: result,
+        message: "Gnani Timbre voice generation failed.",
+        details: errorText,
       });
     }
 
-    res.json(result);
-  } catch (error) {
-    console.error("Prisma STT Error:", error.message);
+    const contentType =
+      gnaniResponse.headers.get("content-type") || "";
 
-    res.status(500).json({
+    if (
+      contentType.includes("application/json") ||
+      contentType.includes("text/")
+    ) {
+      const responseText = await gnaniResponse.text();
+
+      console.error("Unexpected Gnani TTS response:", responseText);
+
+      return res.status(502).json({
+        success: false,
+        message: "Gnani returned text instead of audio.",
+      });
+    }
+
+    const audioBuffer = Buffer.from(
+      await gnaniResponse.arrayBuffer()
+    );
+
+    if (!audioBuffer.length) {
+      return res.status(502).json({
+        success: false,
+        message: "Gnani returned an empty audio response.",
+      });
+    }
+
+    res.set({
+      "Content-Type": contentType || "audio/wav",
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+    });
+
+    return res.send(audioBuffer);
+
+  } catch (error) {
+    console.error("Customer TTS Error:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Speech-to-text processing failed.",
+      message: "Text-to-speech processing failed.",
     });
   }
 });
 
 // ==========================================
-// TIMBRE V2.5 - TEXT TO SPEECH
+// CUSTOMER COMPLAINT UNDERSTANDING
+// ==========================================
+
+
+const understandComplaint = async (req, res) => {
+  try {
+    const { transcript } = req.body;
+
+    if (
+      typeof transcript !== "string" ||
+      !transcript.trim() ||
+      transcript.length > 5000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid complaint transcript.",
+      });
+    }
+
+    let customerName = "Guest";
+    let customerId = null;
+
+    if (req.customer) {
+      const customer = await Customer.findById(req.customer.id);
+
+      if (!customer) {
+        return res.status(404).json({
+          success: false,
+          message: "Customer account not found.",
+        });
+      }
+
+      customerName = customer.name;
+      customerId = customer._id;
+    }
+
+    // Generate AI complaint analysis
+    const analysis = await generateGeminiResponse(transcript, {
+      customerName,
+    });
+
+    if (!analysis || typeof analysis !== "object") {
+      return res.status(500).json({
+        success: false,
+        message: "AI could not analyse the complaint.",
+      });
+    }
+
+    // Normalize priority
+    const priorityValue = String(
+      analysis.priority || "Medium"
+    ).toLowerCase();
+
+    const priorityMap = {
+      low: "Low",
+      medium: "Medium",
+      normal: "Normal",
+      high: "High",
+      urgent: "Urgent",
+    };
+
+    const priority = priorityMap[priorityValue] || "Medium";
+
+    // Normalize escalation
+    const escalationNeeded =
+      analysis.escalationNeeded === true;
+
+    const escalationReason =
+      analysis.escalationReason || "";
+
+    // Determine ticket status
+    const ticketStatus = escalationNeeded
+      ? "Escalated"
+      : "Open";
+
+    // Create conversation
+    const conversation = await Conversation.create({
+      customerId,
+      customerName,
+      transcript,
+      summary: analysis.summary || "",
+      category: analysis.category || "General",
+      priority,
+      status: "Open",
+      language: analysis.language || "English",
+      analysis,
+    });
+
+    // Create support ticket
+    const ticket = await SupportTicket.create({
+      customerId,
+      customerName,
+      conversationId: conversation._id,
+
+      description: transcript,
+      category: analysis.category || "General",
+      priority,
+
+      status: ticketStatus,
+
+      orderId: analysis.orderId || "",
+      transactionId: analysis.transactionId || "",
+
+      paymentMethod: analysis.paymentMethod || "Not provided",
+      paymentTime: analysis.paymentTime || "Not provided",
+
+      requestedAction:
+        analysis.requestedAction || "Customer assistance",
+
+      escalationNeeded,
+      escalationReason,
+    });
+
+    // New ticket notification
+    await createNotification({
+      title: "New Ticket",
+      message: `A new support ticket was created by ${customerName}.`,
+      type: "New Ticket",
+      ticketId: ticket._id,
+    });
+
+    // High-priority notification
+    if (priority === "High" || priority === "Urgent") {
+      await createNotification({
+        title: "High Priority",
+        message: `A ${priority.toLowerCase()} priority ticket requires attention.`,
+        type: "High Priority",
+        ticketId: ticket._id,
+      });
+    }
+
+    // Human support escalation
+    if (escalationNeeded) {
+      await createNotification({
+        title: "Escalation",
+        message: `Ticket from ${customerName} requires human support.`,
+        type: "Escalation",
+        ticketId: ticket._id,
+      });
+
+      // Notify connected admin clients
+      io.to("admins").emit("human-support:requested", {
+        ticketId: ticket._id,
+        customerName,
+        priority: ticket.priority,
+        category: ticket.category,
+        message:
+          escalationReason || "Human support requested.",
+      });
+    }
+
+    // Send response to frontend
+    return res.status(201).json({
+      success: true,
+      message: "Complaint analysed successfully.",
+
+      ticketId: ticket._id,
+      conversationId: conversation._id,
+
+      analysis,
+
+      response: analysis.response || "",
+    });
+
+  } catch (error) {
+    console.error("Complaint Understanding Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to understand complaint.",
+    });
+  }
+};
+
+// CUSTOMER COMPLAINT UNDERSTANDING
+app.post("/api/customer/understand", understandComplaint);
+
+
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
+app.use("/api", protect);
+
+// CONFIGURATION CHECK
+app.get("/api/config", (req, res) => {
+  res.json({
+    success: true,
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    gnaniConfigured: Boolean(process.env.GNANI_API_KEY),
+  });
+});
+
+// ==========================================
+// ADMIN SPEECH TO TEXT
+// ==========================================
+
+app.post(
+  "/api/stt",
+  upload.single("audio"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "Please upload an audio file.",
+        });
+      }
+
+      if (!process.env.GNANI_API_KEY) {
+        return res.status(500).json({
+          success: false,
+          message: "Gnani API key is missing.",
+        });
+      }
+
+      const formData = new FormData();
+
+      const audioBlob = new Blob([req.file.buffer], {
+        type: req.file.mimetype || "audio/webm",
+      });
+
+      formData.append("audio_file", audioBlob, req.file.originalname);
+      formData.append("model", "prisma-v3.0");
+      formData.append("language_code", "indic-auto");
+
+      const response = await fetch("https://api.vachana.ai/stt/v3", {
+        method: "POST",
+        headers: {
+          "X-API-Key-ID": process.env.GNANI_API_KEY,
+        },
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error("Admin Prisma API Error:", result);
+
+        return res.status(response.status).json({
+          success: false,
+          message: "Gnani Prisma request failed.",
+        });
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Admin STT Error:", error.message);
+
+      res.status(500).json({
+        success: false,
+        message: "Speech-to-text processing failed.",
+      });
+    }
+  }
+);
+
+// ==========================================
+// ADMIN TEXT TO SPEECH
 // ==========================================
 
 app.post("/api/tts", async (req, res) => {
@@ -195,10 +809,14 @@ app.post("/api/tts", async (req, res) => {
       voice = "Nalini",
     } = req.body;
 
-    if (!text || typeof text !== "string" || !text.trim()) {
+    if (
+      typeof text !== "string" ||
+      !text.trim() ||
+      text.length > 3000
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Please provide text to convert into speech.",
+        message: "Please provide valid text of up to 3000 characters.",
       });
     }
 
@@ -209,21 +827,6 @@ app.post("/api/tts", async (req, res) => {
       });
     }
 
-    const payload = {
-      text: text.trim(),
-      voice,
-      model: "timbre-v2.5",
-      language,
-      speed: 1.0,
-      audio_config: {
-        sample_rate: 48000,
-        num_channels: 1,
-        sample_width: 2,
-        encoding: "linear_pcm",
-        container: "wav",
-      },
-    };
-
     const response = await fetch(
       "https://api.vachana.ai/api/v1/tts/inference",
       {
@@ -232,20 +835,30 @@ app.post("/api/tts", async (req, res) => {
           "X-API-Key-ID": process.env.GNANI_API_KEY,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          text: text.trim(),
+          voice,
+          model: "timbre-v2.5",
+          language,
+          speed: 1.0,
+          audio_config: {
+            sample_rate: 48000,
+            num_channels: 1,
+            sample_width: 2,
+            encoding: "linear_pcm",
+            container: "wav",
+          },
+        }),
       }
     );
 
     if (!response.ok) {
       const errorText = await response.text();
-
-      console.error("Timbre API Status:", response.status);
-      console.error("Timbre API Details:", errorText);
+      console.error("Admin TTS Error:", errorText);
 
       return res.status(response.status).json({
         success: false,
         message: "Gnani Timbre request failed.",
-        details: errorText,
       });
     }
 
@@ -258,7 +871,7 @@ app.post("/api/tts", async (req, res) => {
 
     res.send(audioBuffer);
   } catch (error) {
-    console.error("Timbre TTS Error:", error.message);
+    console.error("Admin TTS Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -268,27 +881,29 @@ app.post("/api/tts", async (req, res) => {
 });
 
 // ==========================================
-// GET APP SETTINGS
+// ADMIN COMPLAINT UNDERSTANDING
+// ==========================================
+
+app.post("/api/understand", understandComplaint);
+
+// ==========================================
+// SETTINGS
 // ==========================================
 
 app.get("/api/settings", async (req, res) => {
   try {
-    const settings = await AppSettings.findOneAndUpdate(
-      {},
-      { $setOnInsert: {} },
-      {
-        new: true,
-        upsert: true,
-        setDefaultsOnInsert: true,
-      }
-    );
+    let settings = await AppSettings.findOne();
+
+    if (!settings) {
+      settings = await AppSettings.create({});
+    }
 
     res.json({
       success: true,
       settings,
     });
   } catch (error) {
-    console.error("Fetch Settings Error:", error.message);
+    console.error("Settings Fetch Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -297,62 +912,25 @@ app.get("/api/settings", async (req, res) => {
   }
 });
 
-// ==========================================
-// UPDATE APP SETTINGS
-// ==========================================
-
 app.put("/api/settings", async (req, res) => {
   try {
-    const { notificationPreferences } = req.body;
-
-    if (
-      !notificationPreferences ||
-      typeof notificationPreferences !== "object"
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid notification preferences.",
-      });
-    }
-
-    const allowedKeys = [
-      "newTicket",
-      "highPriority",
-      "escalation",
-      "statusUpdate",
-    ];
-
-    for (const key of allowedKeys) {
-      if (typeof notificationPreferences[key] !== "boolean") {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid value for ${key}.`,
-        });
-      }
-    }
-
     const settings = await AppSettings.findOneAndUpdate(
       {},
-      {
-        $set: {
-          notificationPreferences,
-        },
-      },
+      { $set: req.body },
       {
         new: true,
         upsert: true,
         runValidators: true,
-        setDefaultsOnInsert: true,
       }
     );
 
     res.json({
       success: true,
-      message: "Notification preferences saved successfully.",
+      message: "Settings updated successfully.",
       settings,
     });
   } catch (error) {
-    console.error("Update Settings Error:", error.message);
+    console.error("Settings Update Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -362,27 +940,21 @@ app.put("/api/settings", async (req, res) => {
 });
 
 // ==========================================
-// GET ALL NOTIFICATIONS
+// NOTIFICATIONS
 // ==========================================
 
 app.get("/api/notifications", async (req, res) => {
   try {
-    const notifications = await Notification.find().sort({
-      createdAt: -1,
-    });
-
-    const unreadCount = await Notification.countDocuments({
-      isRead: false,
-    });
+    const notifications = await Notification.find()
+      .sort({ createdAt: -1 })
+      .limit(50);
 
     res.json({
       success: true,
-      count: notifications.length,
-      unreadCount,
       notifications,
     });
   } catch (error) {
-    console.error("Fetch Notifications Error:", error);
+    console.error("Notifications Fetch Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -391,16 +963,12 @@ app.get("/api/notifications", async (req, res) => {
   }
 });
 
-// ==========================================
-// MARK SINGLE NOTIFICATION AS READ
-// ==========================================
-
 app.patch("/api/notifications/:id/read", async (req, res) => {
   try {
     const notification = await Notification.findByIdAndUpdate(
       req.params.id,
       { isRead: true },
-      { returnDocument: "after" }
+      { new: true }
     );
 
     if (!notification) {
@@ -412,22 +980,17 @@ app.patch("/api/notifications/:id/read", async (req, res) => {
 
     res.json({
       success: true,
-      message: "Notification marked as read.",
       notification,
     });
   } catch (error) {
-    console.error("Mark Notification Read Error:", error.message);
+    console.error("Notification Read Error:", error.message);
 
     res.status(500).json({
       success: false,
-      message: "Could not update notification.",
+      message: "Failed to update notification.",
     });
   }
 });
-
-// ==========================================
-// MARK ALL NOTIFICATIONS AS READ
-// ==========================================
 
 app.patch("/api/notifications/read-all", async (req, res) => {
   try {
@@ -441,66 +1004,48 @@ app.patch("/api/notifications/read-all", async (req, res) => {
       message: "All notifications marked as read.",
     });
   } catch (error) {
-    console.error("Mark All Read Error:", error.message);
+    console.error("Read All Notifications Error:", error.message);
 
     res.status(500).json({
       success: false,
-      message: "Could not update notifications.",
+      message: "Failed to update notifications.",
     });
   }
 });
 
 // ==========================================
-// GET ALL CONVERSATIONS
+// ADMIN CONVERSATIONS
 // ==========================================
 
 app.get("/api/conversations", async (req, res) => {
   try {
-    const conversations = await Conversation.find().sort({
-      createdAt: -1,
-    });
-
-    const updatedConversations = await Promise.all(
-      conversations.map(async (conversation) => {
-        const ticket = await SupportTicket.findOne({
-          conversationId: conversation._id,
-        }).select("customerName");
-
-        const data = conversation.toObject();
-
-        if (
-          (!data.customerName || data.customerName === "Guest") &&
-          ticket?.customerName
-        ) {
-          data.customerName = ticket.customerName;
-        }
-
-        return data;
-      })
-    );
+    const conversations = await Conversation.find()
+      .sort({ createdAt: -1 })
+      .populate("customerId", "name email");
 
     res.json({
       success: true,
-      count: updatedConversations.length,
-      conversations: updatedConversations,
+      count: conversations.length,
+      conversations,
     });
   } catch (error) {
-    console.error("Error fetching conversations:", error);
+    console.error("Conversations Fetch Error:", error.message);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch conversations",
+      message: "Failed to fetch conversations.",
     });
   }
 });
 
 // ==========================================
-// GET ALL SUPPORT TICKETS
+// ADMIN TICKETS
 // ==========================================
 
 app.get("/api/tickets", async (req, res) => {
   try {
     const tickets = await SupportTicket.find()
+      .populate("customerId", "name email")
       .populate("conversationId")
       .sort({ createdAt: -1 });
 
@@ -510,20 +1055,16 @@ app.get("/api/tickets", async (req, res) => {
       tickets,
     });
   } catch (error) {
-    console.error("Fetch Tickets Error:", error.message);
+    console.error("Tickets Fetch Error:", error.message);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch support tickets.",
+      message: "Failed to fetch tickets.",
     });
   }
 });
 
-// ==========================================
-// UPDATE SUPPORT TICKET STATUS
-// ==========================================
-
-app.patch("/api/tickets/:id", async (req, res) => {
+app.patch("/api/tickets/:id/status", async (req, res) => {
   try {
     const { status } = req.body;
 
@@ -541,54 +1082,44 @@ app.patch("/api/tickets/:id", async (req, res) => {
       });
     }
 
-    const existingTicket = await SupportTicket.findById(req.params.id);
+    const ticket = await SupportTicket.findById(req.params.id);
 
-    if (!existingTicket) {
+    if (!ticket) {
       return res.status(404).json({
         success: false,
-        message: "Support ticket not found.",
+        message: "Ticket not found.",
       });
     }
 
-    const previousStatus = existingTicket.status;
-
-    const ticket = await SupportTicket.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      {
-        returnDocument: "after",
-        runValidators: true,
-      }
-    );
+    ticket.status = status;
+    await ticket.save();
 
     if (ticket.conversationId) {
       await Conversation.findByIdAndUpdate(
         ticket.conversationId,
-        { status },
-        { runValidators: true }
+        { status }
       );
     }
 
-    if (previousStatus !== status) {
-      const isEscalated = status === "Escalated";
+    await createNotification({
+      title: "Status Update",
+      message: `Ticket ${ticket._id} status changed to ${status}.`,
+      type: "Status Update",
+      ticketId: ticket._id,
+    });
 
-      await createNotification({
-        title: isEscalated
-          ? "Ticket Escalated"
-          : "Ticket Status Updated",
-        message: `Ticket for ${ticket.customerName} changed from ${previousStatus} to ${status}.`,
-        type: isEscalated ? "Escalation" : "Status Update",
-        ticketId: ticket._id,
-      });
-    }
+    io.to(`ticket:${ticket._id}`).emit("ticket:status", {
+      ticketId: ticket._id,
+      status,
+    });
 
     res.json({
       success: true,
-      message: "Ticket and conversation status updated successfully!",
+      message: "Ticket status updated.",
       ticket,
     });
   } catch (error) {
-    console.error("Ticket Update Error:", error.message);
+    console.error("Ticket Status Update Error:", error.message);
 
     res.status(500).json({
       success: false,
@@ -598,240 +1129,385 @@ app.patch("/api/tickets/:id", async (req, res) => {
 });
 
 // ==========================================
-// AI-POWERED CUSTOMER COMPLAINT UNDERSTANDING
+// HUMAN SUPPORT QUEUE
 // ==========================================
 
-app.post("/api/understand", async (req, res) => {
+app.get("/api/human-support/requests", async (req, res) => {
   try {
-    console.log("UNDERSTAND API ROUTE HIT");
-
-    const { transcript, customerName } = req.body;
-
-    if (
-      !transcript ||
-      typeof transcript !== "string" ||
-      !transcript.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide a customer transcript.",
-      });
-    }
-
-    const normalizedCustomerName =
-      typeof customerName === "string" && customerName.trim()
-        ? customerName.trim()
-        : "Guest";
-
-    const analysis = await generateGeminiResponse(`
-      You are an intelligent multilingual AI customer support assistant
-      for an Indian e-commerce business.
-
-      Analyze the following customer complaint:
-
-      "${transcript}"
-
-      Extract these fields:
-
-      1. category: Choose one:
-         Delayed Order, Refund Request, Return / Exchange,
-         Damaged Product, General Inquiry.
-
-      2. priority: Choose only:
-         Low, Normal, High, Urgent.
-
-      3. orderId: Extract the order ID if provided.
-         Otherwise return null.
-
-      4. requestedAction: Identify what the customer wants.
-
-      5. summary: Write a short summary of the complaint.
-
-      6. language: Detect the customer's language.
-         Choose English, Hindi, Punjabi, Hinglish, or Other.
-
-      7. clarificationNeeded: Return true if essential information
-         is missing and the customer's request cannot proceed
-         without it.
-
-      8. clarificationMessage:
-         If clarificationNeeded is true, ask the customer for
-         the missing information in their detected language.
-         If false, return an empty string.
-
-      9. escalationNeeded:
-         Return true when:
-         - The customer explicitly asks to speak to a human agent.
-         - The complaint involves suspected fraud or payment security.
-         - The customer reports a serious safety issue.
-         - The customer has an unresolved issue requiring human intervention.
-         - The complaint is too complex for the AI to handle safely.
-
-         Return false for routine complaints that AI can handle.
-
-      10. escalationReason:
-          If escalationNeeded is true, explain briefly why
-          human intervention is required.
-          If false, return an empty string.
-
-      Important escalation rules:
-      - A delayed order alone does not require escalation.
-      - Missing order ID alone does not require escalation.
-      - High priority does not automatically mean escalation.
-      - If the customer explicitly requests a human,
-        escalation takes priority over normal AI assistance.
-
-      Priority guidelines:
-      - Low: General questions.
-      - Normal: Routine requests.
-      - High: Delayed orders, refunds, or damaged products.
-      - Urgent: Serious complaints requiring immediate attention.
-
-      Examples of clarification messages:
-
-      English: Please share your order ID so I can check your order.
-
-      Hindi: कृपया अपना ऑर्डर आईडी बताएं ताकि मैं आपके ऑर्डर की स्थिति जांच सकूं।
-
-      Hinglish: Please apna order ID share kar dijiye, taaki main status check kar sakun.
-
-      Punjabi: ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਆਰਡਰ ਆਈਡੀ ਸਾਂਝਾ ਕਰੋ ਤਾਂ ਜੋ ਮੈਂ ਸਥਿਤੀ ਦੀ ਜਾਂਚ ਕਰ ਸਕਾਂ।
-
-      Return accurate information based only on the customer's message.
-    `);
-
-    const allowedPriorities = [
-      "Low",
-      "Normal",
-      "High",
-      "Urgent",
-    ];
-
-    const priority = allowedPriorities.includes(analysis.priority)
-      ? analysis.priority
-      : "Normal";
-
-    const {
-      category,
-      orderId,
-      requestedAction,
-      summary,
-      language,
-    } = analysis;
-
-    const escalationNeeded = Boolean(analysis.escalationNeeded);
-    const clarificationNeeded = Boolean(analysis.clarificationNeeded);
-
-    const escalationReason = escalationNeeded
-      ? analysis.escalationReason || "Human support is required."
-      : "";
-
-    const clarificationMessage = clarificationNeeded
-      ? analysis.clarificationMessage || ""
-      : "";
-
-    let response = "";
-
-    if (escalationNeeded) {
-      response =
-        "Your concern requires assistance from our human support team. " +
-        "I'm escalating your request to a support agent.";
-    } else if (clarificationNeeded && clarificationMessage) {
-      response = clarificationMessage;
-    } else {
-      response =
-        `Thank you for contacting us. I understand your concern regarding ${category.toLowerCase()}. I'm here to help you with the next steps.`;
-    }
-
-    const initialStatus = escalationNeeded
-      ? "Escalated"
-      : "Open";
-
-    // Save conversation
-    const conversation = await Conversation.create({
-      customerName: normalizedCustomerName,
-      transcript: transcript.trim(),
-      category,
-      priority,
-      language,
-      response,
-      status: initialStatus,
-    });
-
-    // Automatically create support ticket
-    const ticket = await SupportTicket.create({
-      customerName: normalizedCustomerName,
-      orderId,
-      category,
-      priority,
-      description: transcript.trim(),
-      requestedAction,
-      escalationReason,
-      conversationId: conversation._id,
-      status: initialStatus,
-    });
-
-    // ==========================================
-    // AUTOMATIC NOTIFICATIONS
-    // ==========================================
-
-    await createNotification({
-      title: "New Support Ticket",
-      message: `A new ticket has been created for ${normalizedCustomerName}.`,
-      type: "New Ticket",
-      ticketId: ticket._id,
-    });
-
-    if (priority === "High" || priority === "Urgent") {
-      await createNotification({
-        title: `${priority} Priority Complaint`,
-        message: `${normalizedCustomerName} has submitted a ${priority.toLowerCase()} priority complaint.`,
-        type: "High Priority",
-        ticketId: ticket._id,
-      });
-    }
-
-    if (escalationNeeded) {
-      await createNotification({
-        title: "Complaint Escalated",
-        message: `A complaint from ${normalizedCustomerName} requires human support. Reason: ${escalationReason}`,
-        type: "Escalation",
-        ticketId: ticket._id,
-      });
-    }
+    const requests = await SupportTicket.find({
+      status: "Escalated",
+    })
+      .populate("customerId", "name email")
+      .populate("conversationId")
+      .sort({ createdAt: -1 });
 
     res.json({
       success: true,
-      analysis: {
-        category,
-        priority,
-        orderId,
-        requestedAction,
-        summary,
-        language,
-        clarificationNeeded,
-        clarificationMessage,
-        escalationNeeded,
-        escalationReason,
-      },
-      response,
-      conversationId: conversation._id,
-      ticketId: ticket._id,
-      message:
-        "AI analysis completed and support ticket saved successfully!",
+      count: requests.length,
+      requests,
     });
   } catch (error) {
-    console.error("AI Complaint Understanding Error:", error.message);
+    console.error("Human Support Queue Error:", error.message);
 
     res.status(500).json({
       success: false,
-      message: "Could not process the customer complaint.",
+      message: "Failed to fetch human support requests.",
     });
   }
 });
 
 // ==========================================
-// START SERVER
+// ADMIN CHAT HISTORY
+// ==========================================
+
+app.get("/api/chat/:ticketId", async (req, res) => {
+  try {
+    const ticket = await SupportTicket.findById(req.params.ticketId);
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: "Ticket not found.",
+      });
+    }
+
+    const messages = await ChatMessage.find({
+      ticketId: ticket._id,
+    }).sort({ createdAt: 1 });
+
+    res.json({
+      success: true,
+      messages,
+    });
+  } catch (error) {
+    console.error("Chat History Error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch chat history.",
+    });
+  }
+});
+
+// ==========================================
+// SOCKET.IO AUTHENTICATION
+// ==========================================
+
+io.use(async (socket, next) => {
+  try {
+    const cookieHeader = socket.handshake.headers.cookie || "";
+
+    const cookies = Object.fromEntries(
+      cookieHeader.split(";").filter(Boolean).map((item) => {
+        const separator = item.indexOf("=");
+
+        return [
+          item.slice(0, separator).trim(),
+          decodeURIComponent(item.slice(separator + 1).trim()),
+        ];
+      })
+    );
+
+    // Client identifies which login session it is using.
+    // The server still verifies the token and its role.
+    const requestedRole = socket.handshake.auth?.role;
+    console.log("ROLE:", requestedRole);
+    console.log("COOKIES:", Object.keys(cookies));
+
+    let token;
+
+    if (requestedRole === "admin") {
+      token = cookies.token;
+    } else if (requestedRole === "customer") {
+      token = cookies.customerToken;
+    } else {
+      return next(new Error("User role is required."));
+    }
+
+    if (!token || !process.env.JWT_SECRET) {
+      return next(new Error("Authentication required."));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (requestedRole === "admin" && decoded.role === "admin" && decoded.id) {
+      const admin = await Admin.findById(decoded.id).select("_id name email");
+
+      if (!admin) {
+        return next(new Error("Admin account not found."));
+      }
+
+      socket.user = {
+        id: String(admin._id),
+        name: admin.name || "Vaani Admin",
+        role: "admin",
+      };
+
+      return next();
+    }
+
+    if (
+      requestedRole === "customer" &&
+      decoded.role === "customer" &&
+      decoded.id
+    ) {
+      const customer = await Customer.findById(decoded.id).select(
+        "_id name email"
+      );
+
+      if (!customer) {
+        return next(new Error("Customer account not found."));
+      }
+
+      socket.user = {
+        id: String(customer._id),
+        name: customer.name || "Customer",
+        role: "customer",
+      };
+
+      return next();
+    }
+
+    return next(new Error("Invalid user role."));
+  } catch (error) {
+    console.error("Socket Authentication Error:", error.message);
+    return next(new Error("Invalid or expired session."));
+  }
+});
+
+// ==========================================
+// SOCKET.IO CHAT EVENTS
+// ==========================================
+
+io.on("connection", (socket) => {
+  console.log(
+    `${socket.user.role} connected: ${socket.user.name}`
+  );
+
+  if (socket.user.role === "admin") {
+    socket.join("admins");
+  }
+
+  // Join a ticket chat room
+  socket.on("chat:join", async (ticketId, callback) => {
+    try {
+      if (!mongoose.isValidObjectId(ticketId)) {
+        return callback?.({
+          success: false,
+          message: "Invalid ticket ID.",
+        });
+      }
+
+      const ticket = await SupportTicket.findById(ticketId);
+
+      if (!ticket) {
+        return callback?.({
+          success: false,
+          message: "Ticket not found.",
+        });
+      }
+
+      if (
+        socket.user.role === "customer" &&
+        String(ticket.customerId) !== socket.user.id
+      ) {
+        return callback?.({
+          success: false,
+          message: "You cannot access this chat.",
+        });
+      }
+
+      socket.join(`ticket:${ticketId}`);
+
+      const messages = await ChatMessage.find({
+        ticketId,
+      }).sort({ createdAt: 1 });
+
+      callback?.({
+        success: true,
+        messages,
+      });
+    } catch (error) {
+      console.error("Chat Join Error:", error.message);
+
+      callback?.({
+        success: false,
+        message: "Could not join chat.",
+      });
+    }
+  });
+
+  // Send a chat message
+  socket.on("chat:send", async (payload, callback) => {
+    console.log("CHAT SENDER:", socket.user);
+    try {
+      const { ticketId, message } = payload || {};
+
+      if (
+        !mongoose.isValidObjectId(ticketId) ||
+        typeof message !== "string" ||
+        !message.trim() ||
+        message.length > 3000
+      ) {
+        return callback?.({
+          success: false,
+          message: "Invalid chat message.",
+        });
+      }
+
+      const ticket = await SupportTicket.findById(ticketId);
+
+      if (!ticket) {
+        return callback?.({
+          success: false,
+          message: "Ticket not found.",
+        });
+      }
+
+      if (
+        socket.user.role === "customer" &&
+        String(ticket.customerId) !== socket.user.id
+      ) {
+        return callback?.({
+          success: false,
+          message: "You cannot send messages in this chat.",
+        });
+      }
+
+      if (
+        socket.user.role === "customer" &&
+        ticket.status === "Resolved"
+      ) {
+        return callback?.({
+          success: false,
+          message: "This support ticket is already resolved.",
+        });
+      }
+
+      if (
+        socket.user.role === "admin" &&
+        String(ticket.assignedAgentId || "") !== socket.user.id
+      ) {
+        return callback?.({
+          success: false,
+          message: "Accept and get assigned to this ticket before replying.",
+        });
+      }
+
+      const chatMessage = await ChatMessage.create({
+        ticketId: ticket._id,
+        senderId: socket.user.id,
+        senderRole: socket.user.role,
+        senderName: socket.user.name,
+        message: message.trim(),
+      });
+
+      io.to(`ticket:${ticketId}`).emit(
+        "chat:message",
+        chatMessage
+      );
+
+      callback?.({
+        success: true,
+        message: chatMessage,
+      });
+    } catch (error) {
+      console.error("Chat Send Error:", error.message);
+
+      callback?.({
+        success: false,
+        message: "Could not send message.",
+      });
+    }
+  });
+
+  // Admin accepts a human-support request
+  socket.on("human-support:accept", async (ticketId, callback) => {
+    try {
+      if (socket.user.role !== "admin") {
+        return callback?.({
+          success: false,
+          message: "Admin access required.",
+        });
+      }
+
+      if (!mongoose.isValidObjectId(ticketId)) {
+        return callback?.({
+          success: false,
+          message: "Invalid ticket ID.",
+        });
+      }
+
+      const ticket = await SupportTicket.findById(ticketId);
+
+      if (!ticket) {
+        return callback?.({
+          success: false,
+          message: "Ticket not found.",
+        });
+      }
+
+      if (ticket.status !== "Escalated") {
+        return callback?.({
+          success: false,
+          message: "This request is no longer pending.",
+        });
+      }
+
+      // Assign this ticket to the admin who accepted the request.
+      ticket.assignedAgentId = socket.user.id;
+      ticket.assignedAgentName = socket.user.name;
+      ticket.status = "In Progress";
+      await ticket.save();
+
+      if (ticket.conversationId) {
+        await Conversation.findByIdAndUpdate(
+          ticket.conversationId,
+          { status: "In Progress" }
+        );
+      }
+
+      io.to(`ticket:${ticketId}`).emit("ticket:status", {
+        ticketId,
+        status: "In Progress",
+      });
+
+      io.to("admins").emit("human-support:accepted", {
+        ticketId,
+        adminName: socket.user.name,
+        assignedAgentId: socket.user.id,
+        assignedAgentName: socket.user.name,
+      });
+
+      io.to(`ticket:${ticketId}`).emit("human-support:assigned", {
+        ticketId,
+        assignedAgentId: socket.user.id,
+        assignedAgentName: socket.user.name,
+        status: "In Progress",
+      });
+
+      callback?.({
+        success: true,
+        message: "Human support request accepted.",
+      });
+    } catch (error) {
+      console.error("Accept Support Error:", error.message);
+
+      callback?.({
+        success: false,
+        message: "Could not accept support request.",
+      });
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log(
+      `${socket.user.role} disconnected: ${socket.user.name}`
+    );
+  });
+});
+// ==========================================
+// SERVER STARTUP
 // ==========================================
 
 const PORT = process.env.PORT || 5001;
@@ -840,11 +1516,12 @@ const startServer = async () => {
   try {
     await connectDB();
 
-    app.listen(PORT, () => {
-      console.log(`VaaniOS server running on port ${PORT}`);
+    server.listen(PORT, () => {
+      console.log(`VaaniOS backend running on port ${PORT}`);
+      console.log(`Allowed frontend origin: ${CLIENT_URL}`);
     });
   } catch (error) {
-    console.error("Server startup failed:", error.message);
+    console.error("Server Startup Error:", error);
     process.exit(1);
   }
 };

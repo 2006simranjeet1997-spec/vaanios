@@ -8,6 +8,10 @@ const protect = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
+// ==========================================
+// ADMIN COOKIE SETTINGS
+// ==========================================
+
 const cookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
@@ -45,7 +49,14 @@ router.post("/setup", async (req, res) => {
 
     const { name, email, password } = req.body;
 
-    if (!email || !password || !name) {
+    if (
+      typeof name !== "string" ||
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !name.trim() ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({
         success: false,
         message: "Name, email and password are required.",
@@ -59,27 +70,41 @@ router.post("/setup", async (req, res) => {
       });
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+
+    const existingAdmin = await Admin.findOne({
+      email: cleanEmail,
+    });
+
+    if (existingAdmin) {
+      return res.status(409).json({
+        success: false,
+        message: "An admin with this email already exists.",
+      });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 12);
 
     const admin = await Admin.create({
       name: name.trim(),
-      email: email.trim().toLowerCase(),
+      email: cleanEmail,
       password: hashedPassword,
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "First admin account created successfully.",
       admin: {
         id: admin._id,
         name: admin.name,
         email: admin.email,
+        role: "admin",
       },
     });
   } catch (error) {
     console.error("Admin Setup Error:", error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Could not create admin account.",
     });
@@ -137,6 +162,7 @@ router.post("/login", async (req, res) => {
       {
         id: admin._id,
         email: admin.email,
+        role: "admin",
       },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
@@ -144,27 +170,28 @@ router.post("/login", async (req, res) => {
 
     res.cookie("token", token, cookieOptions);
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Login successful.",
+      message: "Admin login successful.",
       admin: {
         id: admin._id,
         name: admin.name,
         email: admin.email,
+        role: "admin",
       },
     });
   } catch (error) {
-    console.error("Login Error:", error.message);
+    console.error("Admin Login Error:", error.message);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Login failed.",
+      message: "Admin login failed.",
     });
   }
 });
 
 // ==========================================
-// CHECK CURRENT SESSION
+// CHECK ADMIN SESSION
 // ==========================================
 
 router.get("/me", protect, async (req, res) => {
@@ -178,18 +205,21 @@ router.get("/me", protect, async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
       admin: {
         id: admin._id,
         name: admin.name,
         email: admin.email,
+        role: "admin",
       },
     });
   } catch (error) {
-    res.status(500).json({
+    console.error("Admin Session Error:", error.message);
+
+    return res.status(500).json({
       success: false,
-      message: "Could not verify session.",
+      message: "Could not verify admin session.",
     });
   }
 });
@@ -206,9 +236,9 @@ router.post("/logout", (req, res) => {
     path: "/",
   });
 
-  res.json({
+  return res.json({
     success: true,
-    message: "Logged out successfully.",
+    message: "Admin logged out successfully.",
   });
 });
 

@@ -3,6 +3,13 @@ const mongoose = require("mongoose");
 
 const supportTicketSchema = new mongoose.Schema(
   {
+    customerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Customer",
+      default: null,
+      index: true,
+    },
+
     customerName: {
       type: String,
       default: "Guest",
@@ -13,6 +20,21 @@ const supportTicketSchema = new mongoose.Schema(
       default: null,
     },
 
+    transactionId: {
+      type: String,
+      default: null,
+    },
+
+    paymentMethod: {
+      type: String,
+      default: "Not provided",
+    },
+
+    paymentTime: {
+      type: String,
+      default: "Not provided",
+    },
+
     category: {
       type: String,
       required: true,
@@ -20,8 +42,8 @@ const supportTicketSchema = new mongoose.Schema(
 
     priority: {
       type: String,
-      enum: ["Low", "Normal", "High", "Urgent"],
-      default: "Normal",
+      enum: ["Low", "Medium", "Normal", "High", "Urgent"],
+      default: "Medium",
     },
 
     description: {
@@ -34,10 +56,27 @@ const supportTicketSchema = new mongoose.Schema(
       default: "Customer assistance",
     },
 
-    // Reason why the ticket needs human support
     escalationReason: {
       type: String,
       default: "",
+    },
+
+    // Whether the complaint requires human support
+    escalationNeeded: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Human support assignment
+    assignedAgentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Admin",
+      default: null,
+    },
+
+    assignedAgentName: {
+      type: String,
+      default: null,
     },
 
     status: {
@@ -54,5 +93,9 @@ const supportTicketSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Indexes
+supportTicketSchema.index({ assignedAgentId: 1 });
+supportTicketSchema.index({ escalationNeeded: 1, status: 1 });
 
 module.exports = mongoose.model("SupportTicket", supportTicketSchema);

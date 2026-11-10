@@ -18,6 +18,8 @@ function Login() {
   const handleLogin = async (e) => {
     e.preventDefault();
 
+    if (loading) return;
+
     setError("");
     setLoading(true);
 
@@ -87,7 +89,7 @@ function Login() {
               required
               autoComplete="username"
               placeholder="Enter your admin email"
-              className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
             />
           </div>
 
@@ -105,7 +107,7 @@ function Login() {
                 required
                 autoComplete="current-password"
                 placeholder="Enter your password"
-                className="w-full rounded-lg border border-slate-300 px-4 py-3 pr-12 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 pr-12 text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
               />
 
               <button
@@ -113,6 +115,7 @@ function Login() {
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
               >
                 {showPassword ? (
                   <EyeOff size={19} />

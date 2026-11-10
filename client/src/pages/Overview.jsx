@@ -1,55 +1,55 @@
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   MessageSquare,
   Ticket,
   Clock,
   CheckCircle2,
-  ArrowUpRight,
-  ArrowDownRight,
-  Phone,
+  AlertTriangle,
   Mic,
   LoaderCircle,
   RefreshCw,
+  Phone,
 } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
-const defaultStats = [
+const STAT_CONFIG = [
   {
     title: "Total Conversations",
-    value: "0",
-    change: "—",
-    positive: true,
+    key: "conversations",
     icon: MessageSquare,
+    color: "bg-violet-50 text-violet-600",
   },
   {
-    title: "AI Resolved",
-    value: "0",
-    change: "—",
-    positive: true,
-    icon: CheckCircle2,
-  },
-  {
-    title: "Pending Tickets",
-    value: "0",
-    change: "—",
-    positive: false,
+    title: "Open Tickets",
+    key: "open",
     icon: Ticket,
+    color: "bg-amber-50 text-amber-600",
   },
   {
-    title: "Avg. Response Time",
-    value: "—",
-    change: "—",
-    positive: true,
+    title: "In Progress",
+    key: "inProgress",
     icon: Clock,
+    color: "bg-blue-50 text-blue-600",
+  },
+  {
+    title: "Resolved Tickets",
+    key: "resolved",
+    icon: CheckCircle2,
+    color: "bg-emerald-50 text-emerald-600",
+  },
+  {
+    title: "Escalated Tickets",
+    key: "escalated",
+    icon: AlertTriangle,
+    color: "bg-rose-50 text-rose-600",
   },
 ];
 
 function getRecords(payload, keys) {
   if (Array.isArray(payload)) return payload;
-
   if (!payload || typeof payload !== "object") return [];
 
   for (const key of keys) {
@@ -66,7 +66,6 @@ function formatTime(dateValue) {
   if (!dateValue) return "Recently";
 
   const date = new Date(dateValue);
-
   if (Number.isNaN(date.getTime())) return "Recently";
 
   const diff = Math.max(0, Date.now() - date.getTime());
@@ -76,27 +75,47 @@ function formatTime(dateValue) {
   if (minutes < 60) return `${minutes} min ago`;
 
   const hours = Math.floor(minutes / 60);
-
   if (hours < 24) return `${hours} hr ago`;
 
   const days = Math.floor(hours / 24);
-
   return `${days} day${days > 1 ? "s" : ""} ago`;
+}
+
+function getStatusStyle(status) {
+  switch (status?.toLowerCase()) {
+    case "resolved":
+      return "bg-emerald-50 text-emerald-700";
+
+    case "open":
+      return "bg-amber-50 text-amber-700";
+
+    case "in progress":
+      return "bg-blue-50 text-blue-700";
+
+    case "escalated":
+      return "bg-rose-50 text-rose-700";
+
+    default:
+      return "bg-slate-100 text-slate-600";
+  }
 }
 
 function Overview() {
   const navigate = useNavigate();
 
-  const [stats, setStats] = useState(defaultStats);
+  const [stats, setStats] = useState({
+    conversations: 0,
+    open: 0,
+    inProgress: 0,
+    resolved: 0,
+    escalated: 0,
+  });
+
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // ==========================================
-  // FETCH DASHBOARD DATA
-  // ==========================================
-
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -109,6 +128,16 @@ function Overview() {
           credentials: "include",
         }),
       ]);
+
+      if (
+        conversationResponse.status === 401 ||
+        conversationResponse.status === 403 ||
+        ticketResponse.status === 401 ||
+        ticketResponse.status === 403
+      ) {
+        navigate("/login");
+        return;
+      }
 
       if (!conversationResponse.ok || !ticketResponse.ok) {
         throw new Error("Unable to load dashboard data.");
@@ -131,63 +160,26 @@ function Overview() {
         "items",
       ]);
 
-      // ==========================================
-      // CALCULATE DASHBOARD STATISTICS
-      // ==========================================
+      const countStatus = (status) =>
+        ticketRecords.filter(
+          (ticket) => ticket.status?.toLowerCase() === status
+        ).length;
 
-      const totalConversations = conversationRecords.length;
-
-      const resolvedConversations = conversationRecords.filter(
-        (item) => item.status?.toLowerCase() === "resolved"
-      ).length;
-
-      const pendingTickets = ticketRecords.filter(
-        (item) => item.status?.toLowerCase() === "pending"
-      ).length;
-
-      setStats([
-        {
-          title: "Total Conversations",
-          value: totalConversations.toLocaleString(),
-          change: "Live",
-          positive: true,
-          icon: MessageSquare,
-        },
-        {
-          title: "AI Resolved",
-          value: resolvedConversations.toLocaleString(),
-          change: "Live",
-          positive: true,
-          icon: CheckCircle2,
-        },
-        {
-          title: "Pending Tickets",
-          value: pendingTickets.toLocaleString(),
-          change: "Live",
-          positive: false,
-          icon: Ticket,
-        },
-        {
-          title: "Avg. Response Time",
-          value: "—",
-          change: "Not available",
-          positive: true,
-          icon: Clock,
-        },
-      ]);
-
-      // ==========================================
-      // RECENT CONVERSATIONS
-      // ==========================================
+      setStats({
+        conversations: conversationRecords.length,
+        open: countStatus("open"),
+        inProgress: countStatus("in progress"),
+        resolved: countStatus("resolved"),
+        escalated: countStatus("escalated"),
+      });
 
       const recentConversations = [...conversationRecords]
-        .sort((a, b) => {
-          return (
+        .sort(
+          (a, b) =>
             new Date(b.createdAt || 0).getTime() -
             new Date(a.createdAt || 0).getTime()
-          );
-        })
-        .slice(0, 4)
+        )
+        .slice(0, 5)
         .map((item) => {
           const name = item.customerName || "Unknown Customer";
 
@@ -195,20 +187,20 @@ function Overview() {
             id: item._id,
             name,
             issue:
-              item.description ||
-              item.category ||
               item.transcript ||
+              item.category ||
               "Customer conversation",
             language: item.language || "Not specified",
-            status: item.status || "Pending",
+            status: item.status || "Open",
             time: formatTime(item.createdAt),
-            initials: name
-              .split(" ")
-              .filter(Boolean)
-              .slice(0, 2)
-              .map((part) => part[0])
-              .join("")
-              .toUpperCase(),
+            initials:
+              name
+                .split(" ")
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((part) => part[0])
+                .join("")
+                .toUpperCase() || "?",
           };
         });
 
@@ -219,23 +211,22 @@ function Overview() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [navigate]);
 
   useEffect(() => {
     fetchDashboardData();
-  }, []);
+  }, [fetchDashboardData]);
 
   return (
     <div className="text-slate-800">
-      {/* Dashboard Introduction */}
+      {/* Dashboard Header */}
       <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight md:text-3xl">
             Dashboard Overview
           </h2>
-
           <p className="mt-2 text-sm text-slate-500">
-            Monitor your AI-powered customer conversations.
+            Monitor your AI-powered customer conversations and support tickets.
           </p>
         </div>
 
@@ -252,11 +243,10 @@ function Overview() {
         </button>
       </div>
 
-      {/* Error Message */}
+      {/* Error */}
       {error && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
           <p className="text-sm text-red-600">{error}</p>
-
           <button
             onClick={fetchDashboardData}
             className="text-sm font-semibold text-red-700 hover:underline"
@@ -266,20 +256,20 @@ function Overview() {
         </div>
       )}
 
-      {/* Stats */}
-      <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map((stat) => {
+      {/* Statistics */}
+      <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {STAT_CONFIG.map((stat) => {
           const Icon = stat.icon;
 
           return (
             <div
-              key={stat.title}
-              className="rounded-2xl border border-slate-200 bg-white p-5"
+              key={stat.key}
+              className="rounded-2xl border border-slate-200 bg-white p-5 transition hover:-translate-y-1 hover:shadow-md"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <p className="text-sm text-slate-500">{stat.title}</p>
 
-                <div className="rounded-xl bg-violet-50 p-2.5 text-violet-600">
+                <div className={`rounded-xl p-2.5 ${stat.color}`}>
                   <Icon size={19} />
                 </div>
               </div>
@@ -291,54 +281,13 @@ function Overview() {
                     className="animate-spin text-violet-500"
                   />
                 ) : (
-                  stat.value
+                  stats[stat.key].toLocaleString()
                 )}
               </h3>
 
-              <div className="mt-3 flex items-center gap-1 text-xs">
-                {stat.change === "Live" ? (
-                  <span className="text-emerald-600">
-                    {stat.change}
-                  </span>
-                ) : stat.change === "—" ||
-                  stat.change === "Not available" ? (
-                  <span className="text-slate-400">
-                    {stat.change}
-                  </span>
-                ) : stat.positive ? (
-                  <ArrowUpRight
-                    size={15}
-                    className="text-emerald-500"
-                  />
-                ) : (
-                  <ArrowDownRight
-                    size={15}
-                    className="text-rose-500"
-                  />
-                )}
-
-                {stat.change !== "Live" &&
-                  stat.change !== "—" &&
-                  stat.change !== "Not available" && (
-                    <span
-                      className={
-                        stat.positive
-                          ? "text-emerald-600"
-                          : "text-rose-500"
-                      }
-                    >
-                      {stat.change}
-                    </span>
-                  )}
-
-                <span className="text-slate-400">
-                  {stat.change === "Live"
-                    ? "from database"
-                    : stat.change === "Not available"
-                      ? ""
-                      : "vs last month"}
-                </span>
-              </div>
+              <p className="mt-3 text-xs text-slate-400">
+                {loading ? "Updating..." : "Live database count"}
+              </p>
             </div>
           );
         })}
@@ -380,7 +329,6 @@ function Overview() {
         <div className="mb-6 flex items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-bold">Recent Conversations</h3>
-
             <p className="mt-1 text-sm text-slate-400">
               Latest customer interactions
             </p>
@@ -408,11 +356,9 @@ function Overview() {
               size={30}
               className="mx-auto mb-3 text-slate-300"
             />
-
             <p className="text-sm font-medium text-slate-600">
               No conversations yet
             </p>
-
             <p className="mt-1 text-xs text-slate-400">
               New customer interactions will appear here.
             </p>
@@ -439,9 +385,8 @@ function Overview() {
                     <td className="py-4">
                       <div className="flex items-center gap-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-50 text-xs font-semibold text-violet-700">
-                          {conversation.initials || "?"}
+                          {conversation.initials}
                         </div>
-
                         <span className="text-sm font-semibold">
                           {conversation.name}
                         </span>
@@ -460,13 +405,9 @@ function Overview() {
 
                     <td className="py-4">
                       <span
-                        className={`rounded-full px-3 py-1 text-xs font-medium ${
-                          conversation.status.toLowerCase() === "resolved"
-                            ? "bg-emerald-50 text-emerald-700"
-                            : conversation.status.toLowerCase() === "pending"
-                              ? "bg-amber-50 text-amber-700"
-                              : "bg-rose-50 text-rose-700"
-                        }`}
+                        className={`rounded-full px-3 py-1 text-xs font-medium ${getStatusStyle(
+                          conversation.status
+                        )}`}
                       >
                         {conversation.status}
                       </span>
