@@ -15,6 +15,9 @@ import Login from "./pages/Login";
 import CustomerRegister from "./pages/CustomerRegister";
 import CustomerLogin from "./pages/CustomerLogin";
 
+// Landing page
+import LandingPage from "./pages/LandingPage";
+
 // Customer pages
 import CustomerPortal from "./pages/CustomerPortal";
 import CustomerDashboard from "./pages/CustomerDashboard";
@@ -86,6 +89,10 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
+
+        {/* PUBLIC LANDING PAGE */}
+        <Route path="/" element={<LandingPage />} />
+
         {/* ADMIN LOGIN */}
         <Route path="/login" element={<Login />} />
 
@@ -137,8 +144,9 @@ function App() {
 
         {/* ADMIN PROTECTED ROUTES */}
         <Route element={<ProtectedRoute />}>
+
           <Route
-            path="/"
+            path="/admin"
             element={
               <DashboardLayout>
                 <Overview />
@@ -190,15 +198,17 @@ function App() {
               </DashboardLayout>
             }
           />
+
         </Route>
 
         {/* UNKNOWN ROUTES */}
         <Route
           path="*"
           element={
-            <Navigate to="/customer/login" replace />
+            <Navigate to="/" replace />
           }
         />
+
       </Routes>
     </BrowserRouter>
   );

@@ -11,7 +11,7 @@ import {
 import { NavLink } from "react-router-dom";
 
 const menuItems = [
-  { name: "Overview", path: "/", icon: LayoutDashboard },
+  { name: "Overview", path: "/admin", icon: LayoutDashboard },
   { name: "Conversations", path: "/conversations", icon: MessageSquare },
   { name: "Voice Assistant", path: "/voice-assistant", icon: Headphones },
   { name: "Support Tickets", path: "/tickets", icon: Ticket },

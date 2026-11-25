@@ -42,7 +42,7 @@ function Login() {
         throw new Error(data.message || "Login failed.");
       }
 
-      navigate("/", { replace: true });
+      navigate("/admin", { replace: true });
     } catch (err) {
       console.error("Login Error:", err);
 
